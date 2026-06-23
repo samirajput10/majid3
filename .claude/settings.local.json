@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(npx tsc --noEmit -p tsconfig.json)",
+      "Bash(cd \"C:/Users/gng/Desktop/majid--main/majid--main/.claude/projects/C--Users-gng-Desktop-majid--main-majid--main/memory\")",
+      "Bash(ls \"C:/Users/gng/.claude/projects/C--Users-gng-Desktop-majid--main-majid--main/memory/MEMORY.md\")",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:3000/cement\" -MaximumRedirection 0 -ErrorAction Stop; \"Status: $\\($r.StatusCode\\)\" } catch { \"Status: $\\($_.Exception.Response.StatusCode.value__\\)\" })"
+    ]
+  }
+}
