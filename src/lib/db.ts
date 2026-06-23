@@ -1,11 +1,5 @@
 import mongoose from 'mongoose';
 
-const MONGODB_URI = process.env.MONGODB_URI as string;
-
-if (!MONGODB_URI) {
-  throw new Error('Please define MONGODB_URI in your .env.local file');
-}
-
 // Cache the connection across hot-reloads in development
 declare global {
   // eslint-disable-next-line no-var
@@ -20,6 +14,14 @@ if (!cached) {
 
 export async function connectDB(): Promise<typeof mongoose> {
   if (cached.conn) return cached.conn;
+
+  // Checked at request time (not import time) so the production build can
+  // collect page data without a live database. Set MONGODB_URI in your
+  // environment (.env.local locally, or Netlify env vars in production).
+  const MONGODB_URI = process.env.MONGODB_URI;
+  if (!MONGODB_URI) {
+    throw new Error('Please define MONGODB_URI in your environment (.env.local or host env vars)');
+  }
 
   if (!cached.promise) {
     const opts = {
