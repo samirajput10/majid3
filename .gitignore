@@ -24,3 +24,9 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# TypeScript build cache
+tsconfig.tsbuildinfo
+
+# Claude Code local settings
+.claude/
