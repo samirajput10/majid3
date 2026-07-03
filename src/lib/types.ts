@@ -92,6 +92,7 @@ export interface Invoice {
   status: InvoiceStatus;
   extraCharges?: ExtraCharge[];
   notes?: string;
+  vehicleNumber?: string;   // transport vehicle shown on the printed bill
   createdAt: string;
   dueDate?: string;
   // Worker B (sales agent / broker)

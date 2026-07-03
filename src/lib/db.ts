@@ -27,10 +27,18 @@ export async function connectDB(): Promise<typeof mongoose> {
     const opts = {
       bufferCommands: false,
       dbName: 'steelvault',        // ← database name inside your cluster
+      serverSelectionTimeoutMS: 10000,
     };
     cached.promise = mongoose.connect(MONGODB_URI, opts);
   }
 
-  cached.conn = await cached.promise;
+  try {
+    cached.conn = await cached.promise;
+  } catch (err) {
+    // Drop the failed promise so the next request retries instead of
+    // being stuck with a dead connection until the server restarts.
+    cached.promise = null;
+    throw err;
+  }
   return cached.conn;
 }

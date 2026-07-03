@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   Plus, Search, FileText, Printer, Trash2, Eye, Edit2,
-  DollarSign, X, PlusCircle, MinusCircle,
+  DollarSign, X, PlusCircle, MinusCircle, UserPlus,
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import Modal from '@/components/ui/Modal';
@@ -12,7 +12,7 @@ import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import EmptyState from '@/components/ui/EmptyState';
 import StatCard from '@/components/ui/StatCard';
 import Badge from '@/components/ui/Badge';
-import { formatCurrency, formatCurrencyFull, formatDate, todayISO, generateId } from '@/lib/utils';
+import { formatCurrency, formatCurrencyFull, formatDate, todayISO, generateId, normalizePhone } from '@/lib/utils';
 import type { Invoice, InvoiceItem, ExtraCharge, SteelType, CementType, ProductCategory, InvoiceType, InvoiceStatus } from '@/lib/types';
 
 const STEEL_TYPES: SteelType[] = ['Rod', 'Sheet', 'Bar', 'Angle', 'Channel', 'Pipe', 'Coil', 'Beam'];
@@ -81,8 +81,10 @@ function numberToWords(value: number): string {
   return parts.join(' ');
 }
 
+const EMPTY_NEW_CUSTOMER = { name: '', phone: '', address: '' };
+
 export default function InvoicesPage() {
-  const { state, addInvoice, updateInvoice, deleteInvoice } = useApp();
+  const { state, addInvoice, updateInvoice, deleteInvoice, addCustomer } = useApp();
   const searchParams = useSearchParams();
 
   const [search, setSearch] = useState('');
@@ -95,6 +97,10 @@ export default function InvoicesPage() {
 
   // Invoice form state
   const [formCustomerId, setFormCustomerId] = useState('');
+  const [customerMode, setCustomerMode] = useState<'existing' | 'new'>('existing');
+  const [newCustomer, setNewCustomer] = useState(EMPTY_NEW_CUSTOMER);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState('');
   const [formInvoiceType, setFormInvoiceType] = useState<InvoiceType>('Steel');
   const [formItems, setFormItems] = useState<InvoiceItem[]>([newItem()]);
   const [formDiscount, setFormDiscount] = useState('0');
@@ -102,6 +108,7 @@ export default function InvoicesPage() {
   const [formAmountPaid, setFormAmountPaid] = useState('');
   const [formNotes, setFormNotes] = useState('');
   const [formDueDate, setFormDueDate] = useState('');
+  const [formVehicle, setFormVehicle] = useState('');
   const [formExtraCharges, setFormExtraCharges] = useState<ExtraCharge[]>([]);
   const [formWorkerBId, setFormWorkerBId] = useState('');
   const [formWorkerBCharge, setFormWorkerBCharge] = useState('');
@@ -130,8 +137,48 @@ export default function InvoicesPage() {
   const balance = Math.max(0, total - parseFloat(formAmountPaid || '0'));
   const status: InvoiceStatus = balance === 0 ? 'Paid' : parseFloat(formAmountPaid || '0') > 0 ? 'Partial' : 'Pending';
 
+  // If the typed phone belongs to a registered customer, we reuse them instead of duplicating
+  const phoneMatch = newCustomer.phone.trim()
+    ? state.customers.find(c => normalizePhone(c.phone) === normalizePhone(newCustomer.phone.trim()))
+    : undefined;
+
+  const customerReady = customerMode === 'new'
+    ? Boolean(newCustomer.name.trim() && newCustomer.phone.trim())
+    : Boolean(formCustomerId);
+
+  // Live stock check — an invoice can never sell more than a batch holds.
+  // When editing, the old invoice's quantities count as available because
+  // the server restores them before deducting the new ones.
+  const oldByBatch: Record<string, number> = {};
+  (editInvoice?.items ?? []).forEach(it => {
+    if (it.stockItemId && it.weightKg) {
+      oldByBatch[it.stockItemId] = (oldByBatch[it.stockItemId] ?? 0) + it.weightKg;
+    }
+  });
+  const requestedByBatch: Record<string, number> = {};
+  formItems.forEach(it => {
+    if (it.stockItemId && it.weightKg) {
+      requestedByBatch[it.stockItemId] = (requestedByBatch[it.stockItemId] ?? 0) + it.weightKg;
+    }
+  });
+  const availableFor = (batchId: string) => {
+    const stock = state.stockItems.find(s => s.id === batchId);
+    return stock ? stock.weightKg + (oldByBatch[batchId] ?? 0) : 0;
+  };
+  const stockErrors = Object.entries(requestedByBatch).flatMap(([id, qty]) => {
+    const stock = state.stockItems.find(s => s.id === id);
+    if (!stock) return [];
+    const available = availableFor(id);
+    if (qty <= available) return [];
+    const unit = (stock.category ?? 'Steel') === 'Cement' ? 'packs' : 'kg';
+    return [`${stock.steelType}${stock.grade ? ` (${stock.grade})` : ''}: only ${available.toLocaleString()} ${unit} in stock — this invoice needs ${qty.toLocaleString()}`];
+  });
+
   const resetForm = () => {
+    setFormError('');
     setFormCustomerId('');
+    setCustomerMode(state.customers.length === 0 ? 'new' : 'existing');
+    setNewCustomer(EMPTY_NEW_CUSTOMER);
     setFormInvoiceType('Steel');
     setFormItems([newItem('Steel')]);
     setFormDiscount('0');
@@ -139,13 +186,17 @@ export default function InvoicesPage() {
     setFormAmountPaid('');
     setFormNotes('');
     setFormDueDate('');
+    setFormVehicle('');
     setFormExtraCharges([]);
     setFormWorkerBId('');
     setFormWorkerBCharge('');
   };
 
   const openEdit = (inv: Invoice) => {
+    setFormError('');
     setFormCustomerId(inv.customerId);
+    setCustomerMode('existing');
+    setNewCustomer(EMPTY_NEW_CUSTOMER);
     setFormInvoiceType(inv.invoiceType ?? 'Steel');
     setFormItems(inv.items.map(i => ({ ...i, category: i.category ?? 'Steel' })));
     setFormExtraCharges((inv.extraCharges ?? []).map(e => ({ ...e })));
@@ -154,6 +205,7 @@ export default function InvoicesPage() {
     setFormAmountPaid(String(inv.amountPaid));
     setFormNotes(inv.notes ?? '');
     setFormDueDate(inv.dueDate ?? '');
+    setFormVehicle(inv.vehicleNumber ?? '');
     setFormWorkerBId(inv.workerBId ?? '');
     setFormWorkerBCharge(inv.workerBCharge ? String(inv.workerBCharge) : '');
     setEditInvoice(inv);
@@ -161,37 +213,62 @@ export default function InvoicesPage() {
   };
 
   const handleCreate = async () => {
-    if (!formCustomerId || formItems.length === 0) return;
-    const customer = state.customers.find(c => c.id === formCustomerId)!;
-    const payload = {
-      invoiceType: formInvoiceType,
-      customerId: formCustomerId,
-      customerName: customer.name,
-      customerPhone: customer.phone,
-      items: formItems,
-      extraCharges: formExtraCharges,
-      subtotal,
-      discount: parseFloat(formDiscount || '0'),
-      discountType: formDiscountType,
-      total,
-      amountPaid: parseFloat(formAmountPaid || '0'),
-      balance,
-      status,
-      notes: formNotes,
-      createdAt: editInvoice ? editInvoice.createdAt : todayISO(),
-      dueDate: formDueDate || undefined,
-      workerBId: formWorkerBId || undefined,
-      workerBName: formWorkerBId ? (state.workerBs.find(w => w.id === formWorkerBId)?.name ?? '') : undefined,
-      workerBCharge: formWorkerBCharge ? parseFloat(formWorkerBCharge) : undefined,
-    };
-    if (editInvoice) {
-      await updateInvoice({ ...editInvoice, ...payload });
-    } else {
-      await addInvoice(payload);
+    if (!customerReady || formItems.length === 0 || saving || stockErrors.length > 0) return;
+    setFormError('');
+    setSaving(true);
+    try {
+      // Customer first: register the new customer (or reuse the one matching this phone),
+      // then create the invoice against them.
+      let customer;
+      if (customerMode === 'new' && !editInvoice) {
+        customer = phoneMatch ?? await addCustomer({
+          name: newCustomer.name.trim(),
+          phone: newCustomer.phone.trim(),
+          address: newCustomer.address.trim(),
+          email: '',
+          city: '',
+        });
+      } else {
+        customer = state.customers.find(c => c.id === formCustomerId);
+        if (!customer) return;
+      }
+      const payload = {
+        invoiceType: formInvoiceType,
+        customerId: customer.id,
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        items: formItems,
+        extraCharges: formExtraCharges,
+        subtotal,
+        discount: parseFloat(formDiscount || '0'),
+        discountType: formDiscountType,
+        total,
+        amountPaid: parseFloat(formAmountPaid || '0'),
+        balance,
+        status,
+        notes: formNotes,
+        vehicleNumber: formVehicle.trim(),
+        createdAt: editInvoice ? editInvoice.createdAt : todayISO(),
+        dueDate: formDueDate || undefined,
+        workerBId: formWorkerBId || undefined,
+        workerBName: formWorkerBId ? (state.workerBs.find(w => w.id === formWorkerBId)?.name ?? '') : undefined,
+        workerBCharge: formWorkerBCharge ? parseFloat(formWorkerBCharge) : undefined,
+      };
+      if (editInvoice) {
+        await updateInvoice({ ...editInvoice, ...payload });
+      } else {
+        await addInvoice(payload);
+      }
+      setCreateOpen(false);
+      setEditInvoice(null);
+      resetForm();
+    } catch (e) {
+      // Surface server-side rejections (e.g. stock validation) in the modal
+      const raw = e instanceof Error ? e.message : 'Failed to save invoice';
+      setFormError(raw.includes('— ') ? raw.split('— ').slice(1).join('— ') : raw);
+    } finally {
+      setSaving(false);
     }
-    setCreateOpen(false);
-    setEditInvoice(null);
-    resetForm();
   };
 
   const updateItem = (idx: number, field: keyof InvoiceItem, value: string | number) => {
@@ -338,7 +415,7 @@ export default function InvoicesPage() {
         <div class="inline" style="margin-top:4px;">
           <div class="row"><span class="lbl">Ph # 1:</span><span class="val"></span></div>
           <div class="row"><span class="lbl">Ph # 2:</span><span class="val">${esc(inv.customerPhone)}</span></div>
-          <div class="row"><span class="lbl">Vehicle #:</span><span class="val">Self</span></div>
+          <div class="row"><span class="lbl">Vehicle #:</span><span class="val">${esc(inv.vehicleNumber || 'Self')}</span></div>
         </div>
         <table>
           <thead>
@@ -453,7 +530,7 @@ export default function InvoicesPage() {
                   <th className="table-header">Paid</th>
                   <th className="table-header">Balance</th>
                   <th className="table-header">Status</th>
-                  <th className="table-header">Agent</th>
+                  <th className="table-header">labour</th>
                   <th className="table-header">Actions</th>
                 </tr>
               </thead>
@@ -533,9 +610,9 @@ export default function InvoicesPage() {
             >
               Cancel
             </button>
-            <button onClick={handleCreate} className="btn-primary" disabled={!formCustomerId}>
+            <button onClick={handleCreate} className="btn-primary" disabled={!customerReady || saving || stockErrors.length > 0}>
               <FileText size={15} />
-              {editInvoice ? 'Save Changes' : 'Create Invoice'}
+              {saving ? 'Saving…' : stockErrors.length > 0 ? 'Not Enough Stock' : editInvoice ? 'Save Changes' : 'Create Invoice'}
             </button>
           </>
         }
@@ -545,13 +622,83 @@ export default function InvoicesPage() {
           {/* Customer + Invoice Type + Due Date */}
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div className="sm:col-span-2">
-              <label className="label">Customer *</label>
-              <select value={formCustomerId} onChange={e => setFormCustomerId(e.target.value)} className="input">
-                <option value="">Select customer...</option>
-                {state.customers.map(c => (
-                  <option key={c.id} value={c.id}>{c.name} — {c.phone}</option>
-                ))}
-              </select>
+              <div className="flex items-center justify-between mb-1">
+                <label className="label mb-0">Customer *</label>
+                {!editInvoice && (
+                  <div className="flex rounded-lg overflow-hidden border border-gray-200 dark:border-gray-600">
+                    <button
+                      type="button"
+                      onClick={() => setCustomerMode('existing')}
+                      className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${customerMode === 'existing' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                    >
+                      Existing
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCustomerMode('new')}
+                      className={`px-2.5 py-1 text-[11px] font-medium flex items-center gap-1 transition-colors ${customerMode === 'new' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                    >
+                      <UserPlus size={11} /> New
+                    </button>
+                  </div>
+                )}
+              </div>
+              {(customerMode === 'existing' || editInvoice) ? (
+                <>
+                  <select value={formCustomerId} onChange={e => setFormCustomerId(e.target.value)} className="input">
+                    <option value="">Select customer...</option>
+                    {state.customers.map(c => (
+                      <option key={c.id} value={c.id}>{c.name} — {c.phone}</option>
+                    ))}
+                  </select>
+                  {state.customers.length === 0 && !editInvoice && (
+                    <p className="text-[10px] text-gray-400 mt-1">
+                      No customers yet — switch to &ldquo;New&rdquo; to register one right here.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      value={newCustomer.name}
+                      onChange={e => setNewCustomer(f => ({ ...f, name: e.target.value }))}
+                      placeholder="Customer name *"
+                      className="input py-2 text-sm"
+                    />
+                    <input
+                      value={newCustomer.phone}
+                      onChange={e => setNewCustomer(f => ({ ...f, phone: e.target.value }))}
+                      placeholder="Phone * (e.g. 0300-0000000)"
+                      className="input py-2 text-sm"
+                    />
+                  </div>
+                  <input
+                    value={newCustomer.address}
+                    onChange={e => setNewCustomer(f => ({ ...f, address: e.target.value }))}
+                    placeholder="Address (optional)"
+                    className="input py-2 text-sm"
+                  />
+                  {phoneMatch ? (
+                    <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg px-2.5 py-1.5">
+                      <p className="text-[11px] text-blue-700 dark:text-blue-300 flex-1">
+                        This phone is already registered to <b>{phoneMatch.name}</b> — the invoice will use them.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => { setCustomerMode('existing'); setFormCustomerId(phoneMatch.id); setNewCustomer(EMPTY_NEW_CUSTOMER); }}
+                        className="text-[11px] font-semibold text-blue-600 hover:underline flex-shrink-0"
+                      >
+                        Select
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-gray-400">
+                      Saved to Customers automatically when the invoice is created.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
             <div>
               <label className="label">Invoice Type *</label>
@@ -573,6 +720,15 @@ export default function InvoicesPage() {
             <div>
               <label className="label">Due Date</label>
               <input value={formDueDate} onChange={e => setFormDueDate(e.target.value)} type="date" className="input" />
+            </div>
+            <div>
+              <label className="label">Transport Vehicle</label>
+              <input
+                value={formVehicle}
+                onChange={e => setFormVehicle(e.target.value)}
+                placeholder="e.g. LES-1234 or Self"
+                className="input"
+              />
             </div>
           </div>
 
@@ -668,11 +824,16 @@ export default function InvoicesPage() {
                           </option>
                         ))}
                       </select>
-                      {item.stockItemId && (
-                        <p className="text-[10px] text-gray-400 mt-0.5">
-                          Available: {(selected?.weightKg ?? 0).toLocaleString()} {isCement ? 'packs' : 'kg'}
-                        </p>
-                      )}
+                      {item.stockItemId && (() => {
+                        const avail = availableFor(item.stockItemId!);
+                        const over = (requestedByBatch[item.stockItemId!] ?? 0) > avail;
+                        return (
+                          <p className={`text-[10px] mt-0.5 ${over ? 'text-red-500 font-semibold' : 'text-gray-400'}`}>
+                            Available: {avail.toLocaleString()} {isCement ? 'packs' : 'kg'}
+                            {over && ' — not enough stock!'}
+                          </p>
+                        );
+                      })()}
                     </div>
                     {formItems.length > 1 && (
                       <button
@@ -714,6 +875,16 @@ export default function InvoicesPage() {
                 );
               })}
             </div>
+            {(stockErrors.length > 0 || formError) && (
+              <div className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl p-3 space-y-1">
+                {stockErrors.map((err, i) => (
+                  <p key={i} className="text-xs font-medium text-red-600 dark:text-red-400">⚠ {err}</p>
+                ))}
+                {formError && (
+                  <p className="text-xs font-medium text-red-600 dark:text-red-400">⚠ {formError}</p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Extra Charges */}
@@ -907,6 +1078,12 @@ export default function InvoicesPage() {
                 <div>
                   <div className="text-[10px] font-semibold text-indigo-400 uppercase tracking-wider mb-1">Dealt By</div>
                   <div className="text-sm font-semibold text-gray-900 dark:text-white">{viewInvoice.workerBName}</div>
+                </div>
+              )}
+              {viewInvoice.vehicleNumber && (
+                <div>
+                  <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Vehicle</div>
+                  <div className="text-sm font-semibold text-gray-900 dark:text-white">{viewInvoice.vehicleNumber}</div>
                 </div>
               )}
             </div>

@@ -3,6 +3,7 @@ import { connectDB } from '@/lib/db';
 import { Invoice } from '@/lib/models/Invoice';
 import { StockItem } from '@/lib/models/StockItem';
 import { WorkerB } from '@/lib/models/WorkerB';
+import { stockShortages } from '@/lib/stockGuard';
 
 async function adjustStock(items: any[], direction: 1 | -1) {
   for (const item of items) {
@@ -25,8 +26,25 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
     await connectDB();
     const body = await req.json();
 
-    // Restore old stock, then deduct new stock
     const old = await Invoice.findById(params.id).lean() as any;
+
+    // Validate stock before touching anything — quantities the old version
+    // of this invoice already holds count as available for the new version.
+    const oldByBatch: Record<string, number> = {};
+    for (const item of old?.items ?? []) {
+      if (item.stockItemId && item.weightKg) {
+        oldByBatch[item.stockItemId] = (oldByBatch[item.stockItemId] ?? 0) + item.weightKg;
+      }
+    }
+    const shortages = await stockShortages(body.items, oldByBatch);
+    if (shortages.length) {
+      return NextResponse.json(
+        { error: 'Not enough stock — ' + shortages.join('; ') },
+        { status: 400 }
+      );
+    }
+
+    // Restore old stock, then deduct new stock
     if (old?.items?.length) await adjustStock(old.items, +1);   // restore
     if (body.items?.length)  await adjustStock(body.items,  -1); // deduct new
 

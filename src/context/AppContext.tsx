@@ -124,13 +124,13 @@ interface AppContextType {
   loading: boolean;
   error: string | null;
   dispatch: React.Dispatch<Action>;
-  addCompany: (data: Omit<Company, 'id' | 'createdAt' | 'totalPurchased' | 'totalCost'>) => Promise<void>;
+  addCompany: (data: Omit<Company, 'id' | 'createdAt' | 'totalPurchased' | 'totalCost'>) => Promise<Company>;
   updateCompany: (c: Company) => Promise<void>;
   deleteCompany: (id: string) => Promise<void>;
   addStock: (data: Omit<StockItem, 'id' | 'status'>) => Promise<void>;
   updateStock: (s: StockItem) => Promise<void>;
   deleteStock: (id: string) => Promise<void>;
-  addCustomer: (data: Omit<Customer, 'id' | 'createdAt' | 'totalPurchases' | 'totalSpent' | 'pendingBalance'>) => Promise<void>;
+  addCustomer: (data: Omit<Customer, 'id' | 'createdAt' | 'totalPurchases' | 'totalSpent' | 'pendingBalance'>) => Promise<Customer>;
   updateCustomer: (c: Customer) => Promise<void>;
   deleteCustomer: (id: string) => Promise<void>;
   addInvoice: (data: Omit<Invoice, 'id' | 'invoiceNumber'>) => Promise<void>;
@@ -214,6 +214,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   ) => {
     const c = norm(await api<Company>('/api/companies', { method: 'POST', body: JSON.stringify(data) }));
     dispatch({ type: 'ADD_COMPANY', payload: c });
+    return c;
   }, []);
 
   const updateCompany = useCallback(async (c: Company) => {
@@ -248,6 +249,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   ) => {
     const c = norm(await api<Customer>('/api/customers', { method: 'POST', body: JSON.stringify(data) }));
     dispatch({ type: 'ADD_CUSTOMER', payload: c });
+    return c;
   }, []);
 
   const updateCustomer = useCallback(async (c: Customer) => {

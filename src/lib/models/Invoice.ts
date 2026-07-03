@@ -34,6 +34,7 @@ const InvoiceSchema = new Schema({
   balance:        { type: Number, default: 0 },
   status:         { type: String, enum: ['Paid', 'Pending', 'Partial', 'Cancelled'], default: 'Pending' },
   notes:          { type: String, default: '' },
+  vehicleNumber:  { type: String, default: '' },
   createdAt:      { type: String },
   dueDate:        { type: String, default: '' },
   workerBId:      { type: String, default: '' },

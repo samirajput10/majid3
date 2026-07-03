@@ -4,6 +4,7 @@ import { Invoice } from '@/lib/models/Invoice';
 import { Customer } from '@/lib/models/Customer';
 import { StockItem } from '@/lib/models/StockItem';
 import { WorkerB } from '@/lib/models/WorkerB';
+import { stockShortages } from '@/lib/stockGuard';
 
 // ── Deduct stock for each invoice item ──────────────────────────────────────
 async function deductStock(items: any[]) {
@@ -41,6 +42,15 @@ export async function POST(req: Request) {
   try {
     await connectDB();
     const body = await req.json();
+
+    // Refuse to sell more than the stock batches hold
+    const shortages = await stockShortages(body.items);
+    if (shortages.length) {
+      return NextResponse.json(
+        { error: 'Not enough stock — ' + shortages.join('; ') },
+        { status: 400 }
+      );
+    }
 
     // Auto-generate invoice number
     const count = await Invoice.countDocuments();

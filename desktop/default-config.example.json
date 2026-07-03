@@ -1,0 +1,6 @@
+{
+  "atlasUri": "mongodb://USER:PASSWORD@your-cluster-host-1:27017,your-cluster-host-2:27017/?ssl=true&replicaSet=YOUR_REPLICA_SET&authSource=admin",
+  "authEmail": "majid@admin.com",
+  "authPassword": "CHANGE_ME",
+  "syncIntervalMinutes": 3
+}

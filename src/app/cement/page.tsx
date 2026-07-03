@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, Search, Boxes, Edit2, Trash2, AlertTriangle } from 'lucide-react';
+import { Plus, Search, Boxes, Edit2, Trash2, AlertTriangle, Building2 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
@@ -19,8 +19,10 @@ const EMPTY_FORM = {
 
 const fmtPacks = (n: number) => `${n.toLocaleString('en-PK')} pack${n === 1 ? '' : 's'}`;
 
+const EMPTY_NEW_COMPANY = { name: '', phone: '', contactPerson: '' };
+
 export default function CementPage() {
-  const { state, addStock, updateStock, deleteStock } = useApp();
+  const { state, addStock, updateStock, deleteStock, addCompany } = useApp();
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
@@ -28,6 +30,9 @@ export default function CementPage() {
   const [editTarget, setEditTarget] = useState<StockItem | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [companyMode, setCompanyMode] = useState<'existing' | 'new'>('existing');
+  const [newCompany, setNewCompany] = useState(EMPTY_NEW_COMPANY);
+  const [saving, setSaving] = useState(false);
 
   // Only Cement stock on this page
   const cementItems = state.stockItems.filter(s => s.category === 'Cement');
@@ -55,7 +60,13 @@ export default function CementPage() {
   const lowStock = cementItems.filter(s => s.status === 'Low Stock').length;
   const outOfStock = cementItems.filter(s => s.status === 'Out of Stock').length;
 
-  const openAdd = () => { setForm(EMPTY_FORM); setEditTarget(null); setModalOpen(true); };
+  const openAdd = () => {
+    setForm(EMPTY_FORM);
+    setEditTarget(null);
+    setCompanyMode(state.companies.length === 0 ? 'new' : 'existing');
+    setNewCompany(EMPTY_NEW_COMPANY);
+    setModalOpen(true);
+  };
   const openEdit = (s: StockItem) => {
     setEditTarget(s);
     setForm({
@@ -64,34 +75,63 @@ export default function CementPage() {
       companyId: s.companyId, batchNumber: s.batchNumber, dateAdded: s.dateAdded,
       location: s.location ?? '', notes: s.notes ?? '',
     });
+    setCompanyMode('existing');
+    setNewCompany(EMPTY_NEW_COMPANY);
     setModalOpen(true);
   };
 
+  // If the typed name matches a registered company, reuse it instead of duplicating
+  const companyNameMatch = newCompany.name.trim()
+    ? state.companies.find(c => c.name.trim().toLowerCase() === newCompany.name.trim().toLowerCase())
+    : undefined;
+
+  const companyReady = companyMode === 'new'
+    ? Boolean(newCompany.name.trim() && newCompany.phone.trim())
+    : Boolean(form.companyId);
+
   const handleSave = async () => {
-    if (!form.cementType || !form.packs || !form.companyId) return;
-    const company = state.companies.find(c => c.id === form.companyId);
-    const packs = parseFloat(form.packs);
-    const base = {
-      category: 'Cement' as const,
-      steelType: form.cementType,
-      grade: form.grade,
-      weightKg: packs,                       // packs stored here so deduction/value logic is shared
-      quantity: Math.round(packs),
-      unit: 'pack' as const,
-      pricePerKg: parseFloat(form.pricePerPack || '0'),  // price per pack
-      companyId: form.companyId,
-      companyName: company?.name ?? '',
-      batchNumber: form.batchNumber,
-      dateAdded: form.dateAdded,
-      location: form.location,
-      notes: form.notes,
-    };
-    if (editTarget) {
-      await updateStock({ ...editTarget, ...base });
-    } else {
-      await addStock(base);
+    if (!form.cementType || !form.packs || !companyReady || saving) return;
+    setSaving(true);
+    try {
+      // Company first: register the new supplier (or reuse the matching one), then save the stock.
+      let company;
+      if (companyMode === 'new') {
+        company = companyNameMatch ?? await addCompany({
+          name: newCompany.name.trim(),
+          phone: newCompany.phone.trim(),
+          contactPerson: newCompany.contactPerson.trim(),
+          address: '',
+          email: '',
+        });
+      } else {
+        company = state.companies.find(c => c.id === form.companyId);
+        if (!company) return;
+      }
+      const packs = parseFloat(form.packs);
+      const base = {
+        category: 'Cement' as const,
+        steelType: form.cementType,
+        grade: form.grade,
+        weightKg: packs,                       // packs stored here so deduction/value logic is shared
+        quantity: Math.round(packs),
+        unit: 'pack' as const,
+        pricePerKg: parseFloat(form.pricePerPack || '0'),  // price per pack
+        companyId: company.id,
+        companyName: company.name,
+        batchNumber: form.batchNumber,
+        dateAdded: form.dateAdded,
+        location: form.location,
+        notes: form.notes,
+      };
+      if (editTarget) {
+        await updateStock({ ...editTarget, ...base });
+      } else {
+        await addStock(base);
+      }
+      setModalOpen(false);
+    } finally {
+      setSaving(false);
     }
-    setModalOpen(false);
   };
 
   return (
@@ -212,8 +252,8 @@ export default function CementPage() {
         footer={
           <>
             <button onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button>
-            <button onClick={handleSave} className="btn-primary" disabled={!form.cementType || !form.packs || !form.companyId}>
-              {editTarget ? 'Save Changes' : 'Add Cement'}
+            <button onClick={handleSave} className="btn-primary" disabled={!form.cementType || !form.packs || !companyReady || saving}>
+              {saving ? 'Saving…' : editTarget ? 'Save Changes' : 'Add Cement'}
             </button>
           </>
         }
@@ -237,12 +277,80 @@ export default function CementPage() {
             <label className="label">Price per Pack (PKR)</label>
             <input value={form.pricePerPack} onChange={e => setForm(f => ({ ...f, pricePerPack: e.target.value }))} type="number" min="0" placeholder="0" className="input" />
           </div>
-          <div>
-            <label className="label">Supplier Company *</label>
-            <select value={form.companyId} onChange={e => setForm(f => ({ ...f, companyId: e.target.value }))} className="input">
-              <option value="">Select company</option>
-              {state.companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+          <div className={companyMode === 'new' ? 'col-span-2' : ''}>
+            <div className="flex items-center justify-between mb-1">
+              <label className="label mb-0">Supplier Company *</label>
+              <div className="flex rounded-lg overflow-hidden border border-gray-200 dark:border-gray-600">
+                <button
+                  type="button"
+                  onClick={() => setCompanyMode('existing')}
+                  className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${companyMode === 'existing' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                >
+                  Existing
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCompanyMode('new')}
+                  className={`px-2.5 py-1 text-[11px] font-medium flex items-center gap-1 transition-colors ${companyMode === 'new' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                >
+                  <Building2 size={11} /> New
+                </button>
+              </div>
+            </div>
+            {companyMode === 'existing' ? (
+              <>
+                <select value={form.companyId} onChange={e => setForm(f => ({ ...f, companyId: e.target.value }))} className="input">
+                  <option value="">Select company</option>
+                  {state.companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                {state.companies.length === 0 && (
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    No companies yet — switch to &ldquo;New&rdquo; to register one right here.
+                  </p>
+                )}
+              </>
+            ) : (
+              <div className="space-y-2">
+                <div className="grid grid-cols-3 gap-2">
+                  <input
+                    value={newCompany.name}
+                    onChange={e => setNewCompany(f => ({ ...f, name: e.target.value }))}
+                    placeholder="Company name *"
+                    className="input py-2 text-sm"
+                  />
+                  <input
+                    value={newCompany.phone}
+                    onChange={e => setNewCompany(f => ({ ...f, phone: e.target.value }))}
+                    placeholder="Phone *"
+                    className="input py-2 text-sm"
+                  />
+                  <input
+                    value={newCompany.contactPerson}
+                    onChange={e => setNewCompany(f => ({ ...f, contactPerson: e.target.value }))}
+                    placeholder="Contact person"
+                    className="input py-2 text-sm"
+                  />
+                </div>
+                {companyNameMatch ? (
+                  <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg px-2.5 py-1.5">
+                    <p className="text-[11px] text-blue-700 dark:text-blue-300 flex-1">
+                      <b>{companyNameMatch.name}</b> is already registered — this stock will use it.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => { setCompanyMode('existing'); setForm(f => ({ ...f, companyId: companyNameMatch.id })); setNewCompany(EMPTY_NEW_COMPANY); }}
+                      className="text-[11px] font-semibold text-blue-600 hover:underline flex-shrink-0"
+                    >
+                      Select
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-gray-400">
+                    Saved to Companies automatically when the cement is added.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
           <div>
             <label className="label">Batch Number</label>

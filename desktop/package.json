@@ -1,0 +1,50 @@
+{
+  "name": "majid-steel-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Majid Steel Warehouse — offline desktop app with cloud sync",
+  "main": "main.js",
+  "scripts": {
+    "fetch-mongod": "node scripts/fetch-mongod.js",
+    "prepare-server": "node scripts/prepare-server.js",
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "dependencies": {
+    "mongodb": "^6.8.0"
+  },
+  "devDependencies": {
+    "electron": "^31.3.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.majidsteel.warehouse",
+    "productName": "Majid Steel Warehouse",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "sync.js",
+      "default-config.json"
+    ],
+    "extraResources": [
+      {
+        "from": "server-bundle",
+        "to": "app-server"
+      },
+      {
+        "from": "bin",
+        "to": "mongod"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
