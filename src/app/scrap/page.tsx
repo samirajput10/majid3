@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Search, Recycle, Trash2, Package, Boxes, DollarSign } from 'lucide-react';
+import { Search, Recycle, Trash2, Undo2, Package, Boxes, DollarSign } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import EmptyState from '@/components/ui/EmptyState';
@@ -11,10 +11,11 @@ import { formatCurrency, formatWeight, formatDate } from '@/lib/utils';
 const fmtPacks = (n: number) => `${n.toLocaleString('en-PK')} pack${n === 1 ? '' : 's'}`;
 
 export default function ScrapPage() {
-  const { state, deleteScrap } = useApp();
+  const { state, deleteScrap, restoreScrap } = useApp();
   const [search, setSearch] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [restoreId, setRestoreId] = useState<string | null>(null);
 
   const filtered = state.scrapItems.filter(s => {
     const q = search.toLowerCase();
@@ -111,13 +112,22 @@ export default function ScrapPage() {
                       <td className="table-cell text-xs text-gray-400">{formatDate(s.date)}</td>
                       <td className="table-cell text-xs text-gray-400 max-w-[160px] truncate">{s.notes || '—'}</td>
                       <td className="table-cell">
-                        <button
-                          onClick={() => setDeleteId(s.id)}
-                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-                          title="Undo — put quantity back into stock"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => setRestoreId(s.id)}
+                            className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 rounded-lg transition-colors"
+                            title="Restore — put quantity back into stock"
+                          >
+                            <Undo2 size={14} />
+                          </button>
+                          <button
+                            onClick={() => setDeleteId(s.id)}
+                            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                            title="Delete permanently — stock is NOT restored"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -129,11 +139,22 @@ export default function ScrapPage() {
       </div>
 
       <ConfirmDialog
+        open={!!restoreId}
+        onClose={() => setRestoreId(null)}
+        onConfirm={async () => { if (restoreId) await restoreScrap(restoreId); }}
+        title="Restore to Stock"
+        message="This removes the scrap record and puts the quantity back into the stock batch so it can be sold again. Continue?"
+        confirmLabel="Restore"
+        variant="warning"
+      />
+
+      <ConfirmDialog
         open={!!deleteId}
         onClose={() => setDeleteId(null)}
         onConfirm={async () => { if (deleteId) await deleteScrap(deleteId); }}
-        title="Undo Scrap"
-        message="This removes the scrap record and puts the quantity back into the stock batch. Continue?"
+        title="Delete Permanently"
+        message="This permanently removes the scrap record. The quantity is NOT restored to stock — it stays scrapped and cannot be recovered. Continue?"
+        confirmLabel="Delete Permanently"
       />
     </div>
   );

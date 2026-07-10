@@ -138,6 +138,7 @@ interface AppContextType {
   deleteStock: (id: string) => Promise<void>;
   addScrap: (data: { stockItemId: string; weightKg: number; notes?: string; date?: string }) => Promise<void>;
   deleteScrap: (id: string) => Promise<void>;
+  restoreScrap: (id: string) => Promise<void>;
   addCustomer: (data: Omit<Customer, 'id' | 'createdAt' | 'totalPurchases' | 'totalSpent' | 'pendingBalance'>) => Promise<Customer>;
   updateCustomer: (c: Customer) => Promise<void>;
   deleteCustomer: (id: string) => Promise<void>;
@@ -265,8 +266,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } catch { /* non-critical */ }
   }, []);
 
+  // Permanent delete — the scrap record is removed, stock is untouched
   const deleteScrap = useCallback(async (id: string) => {
     await api(`/api/scrap/${id}`, { method: 'DELETE' });
+    dispatch({ type: 'DELETE_SCRAP', payload: id });
+  }, []);
+
+  // Restore — puts the quantity back into its stock batch, then removes the scrap record
+  const restoreScrap = useCallback(async (id: string) => {
+    await api(`/api/scrap/${id}/restore`, { method: 'POST' });
     dispatch({ type: 'DELETE_SCRAP', payload: id });
     try {
       const freshStock = await api<StockItem[]>('/api/stock');
@@ -406,7 +414,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       state, loading, error, dispatch,
       addCompany, updateCompany, deleteCompany,
       addStock, updateStock, deleteStock,
-      addScrap, deleteScrap,
+      addScrap, deleteScrap, restoreScrap,
       addCustomer, updateCustomer, deleteCustomer,
       addInvoice, updateInvoice, deleteInvoice,
       addWorker, updateWorker, deleteWorker,
