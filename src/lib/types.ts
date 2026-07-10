@@ -36,6 +36,22 @@ export interface StockItem {
   status: StockStatus;
 }
 
+// ─── Scrap ──────────────────────────────────────────────────────────────────
+export interface ScrapItem {
+  id: string;
+  stockItemId: string;       // batch this scrap came from
+  category: ProductCategory;
+  steelType: ProductType;
+  grade?: string;
+  weightKg: number;          // Steel: kg scrapped · Cement: packs scrapped
+  unit: string;
+  pricePerKg: number;        // original purchase price (for value reference)
+  companyName: string;
+  batchNumber: string;
+  date: string;              // YYYY-MM-DD
+  notes?: string;
+}
+
 // ─── Customer ───────────────────────────────────────────────────────────────
 export interface Customer {
   id: string;
@@ -156,6 +172,7 @@ export interface DashboardStats {
 export interface AppState {
   companies: Company[];
   stockItems: StockItem[];
+  scrapItems: ScrapItem[];
   customers: Customer[];
   invoices: Invoice[];
   workers: Worker[];

@@ -17,6 +17,7 @@ const COLLECTIONS = [
   'companies',
   'customers',
   'stockitems',
+  'scraps',
   'invoices',
   'workers',
   'workerbs',

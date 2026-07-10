@@ -4,7 +4,7 @@ import React, {
   createContext, useContext, useReducer, useEffect, useCallback, useState,
 } from 'react';
 import type {
-  AppState, Company, StockItem, Customer, Invoice, Worker, WorkerB, AttendanceRecord,
+  AppState, Company, StockItem, ScrapItem, Customer, Invoice, Worker, WorkerB, AttendanceRecord,
 } from '@/lib/types';
 import { getStockStatus } from '@/lib/utils';
 
@@ -19,6 +19,8 @@ type Action =
   | { type: 'ADD_STOCK'; payload: StockItem }
   | { type: 'UPDATE_STOCK'; payload: StockItem }
   | { type: 'DELETE_STOCK'; payload: string }
+  | { type: 'ADD_SCRAP'; payload: ScrapItem }
+  | { type: 'DELETE_SCRAP'; payload: string }
   | { type: 'ADD_CUSTOMER'; payload: Customer }
   | { type: 'UPDATE_CUSTOMER'; payload: Customer }
   | { type: 'DELETE_CUSTOMER'; payload: string }
@@ -34,7 +36,7 @@ type Action =
   | { type: 'SET_ATTENDANCE'; payload: AttendanceRecord };
 
 const initialState: AppState = {
-  companies: [], stockItems: [], customers: [],
+  companies: [], stockItems: [], scrapItems: [], customers: [],
   invoices: [], workers: [], workerBs: [], attendance: [],
   darkMode: false, sidebarOpen: true,
 };
@@ -67,6 +69,9 @@ function reducer(state: AppState, action: Action): AppState {
     case 'ADD_STOCK':    return { ...state, stockItems: [...state.stockItems, action.payload] };
     case 'UPDATE_STOCK': return { ...state, stockItems: state.stockItems.map(s => s.id === action.payload.id ? action.payload : s) };
     case 'DELETE_STOCK': return { ...state, stockItems: state.stockItems.filter(s => s.id !== action.payload) };
+
+    case 'ADD_SCRAP':    return { ...state, scrapItems: [action.payload, ...state.scrapItems] };
+    case 'DELETE_SCRAP': return { ...state, scrapItems: state.scrapItems.filter(s => s.id !== action.payload) };
 
     case 'ADD_CUSTOMER':    return { ...state, customers: [...state.customers, action.payload] };
     case 'UPDATE_CUSTOMER': return { ...state, customers: state.customers.map(c => c.id === action.payload.id ? action.payload : c) };
@@ -130,6 +135,8 @@ interface AppContextType {
   addStock: (data: Omit<StockItem, 'id' | 'status'>) => Promise<void>;
   updateStock: (s: StockItem) => Promise<void>;
   deleteStock: (id: string) => Promise<void>;
+  addScrap: (data: { stockItemId: string; weightKg: number; notes?: string; date?: string }) => Promise<void>;
+  deleteScrap: (id: string) => Promise<void>;
   addCustomer: (data: Omit<Customer, 'id' | 'createdAt' | 'totalPurchases' | 'totalSpent' | 'pendingBalance'>) => Promise<Customer>;
   updateCustomer: (c: Customer) => Promise<void>;
   deleteCustomer: (id: string) => Promise<void>;
@@ -166,10 +173,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async function load() {
       try {
         setLoading(true);
-        const [companies, stockItems, customers, invoices, workers, workerBs, attendance] =
+        const [companies, stockItems, scrapItems, customers, invoices, workers, workerBs, attendance] =
           await Promise.all([
             api<Company[]>('/api/companies').then(normAll),
             api<StockItem[]>('/api/stock').then(normAll),
+            api<ScrapItem[]>('/api/scrap').then(normAll),
             api<Customer[]>('/api/customers').then(normAll),
             api<Invoice[]>('/api/invoices').then(normAll),
             api<Worker[]>('/api/workers').then(normAll),
@@ -178,7 +186,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ]);
         dispatch({
           type: 'SET_DATA',
-          payload: { companies, stockItems, customers, invoices, workers, workerBs, attendance },
+          payload: { companies, stockItems, scrapItems, customers, invoices, workers, workerBs, attendance },
         });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : 'Failed to load data from database';
@@ -242,6 +250,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const deleteStock = useCallback(async (id: string) => {
     await api(`/api/stock/${id}`, { method: 'DELETE' });
     dispatch({ type: 'DELETE_STOCK', payload: id });
+  }, []);
+
+  const addScrap = useCallback(async (
+    data: { stockItemId: string; weightKg: number; notes?: string; date?: string }
+  ) => {
+    const s = norm(await api<ScrapItem>('/api/scrap', { method: 'POST', body: JSON.stringify(data) }));
+    dispatch({ type: 'ADD_SCRAP', payload: s });
+    // Refresh stock so the deducted batch shows its new remaining quantity
+    try {
+      const freshStock = await api<StockItem[]>('/api/stock');
+      dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock) } });
+    } catch { /* non-critical */ }
+  }, []);
+
+  const deleteScrap = useCallback(async (id: string) => {
+    await api(`/api/scrap/${id}`, { method: 'DELETE' });
+    dispatch({ type: 'DELETE_SCRAP', payload: id });
+    try {
+      const freshStock = await api<StockItem[]>('/api/stock');
+      dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock) } });
+    } catch { /* non-critical */ }
   }, []);
 
   const addCustomer = useCallback(async (
@@ -367,6 +396,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       state, loading, error, dispatch,
       addCompany, updateCompany, deleteCompany,
       addStock, updateStock, deleteStock,
+      addScrap, deleteScrap,
       addCustomer, updateCustomer, deleteCustomer,
       addInvoice, updateInvoice, deleteInvoice,
       addWorker, updateWorker, deleteWorker,

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, Search, Package, Filter, Edit2, Trash2, AlertTriangle, Building2 } from 'lucide-react';
+import { Plus, Search, Package, Filter, Edit2, Trash2, AlertTriangle, Building2, Recycle } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
@@ -19,7 +19,7 @@ const EMPTY_FORM = {
 const EMPTY_NEW_COMPANY = { name: '', phone: '', contactPerson: '' };
 
 export default function InventoryPage() {
-  const { state, addStock, updateStock, deleteStock, addCompany } = useApp();
+  const { state, addStock, updateStock, deleteStock, addCompany, addScrap } = useApp();
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
@@ -30,6 +30,11 @@ export default function InventoryPage() {
   const [companyMode, setCompanyMode] = useState<'existing' | 'new'>('existing');
   const [newCompany, setNewCompany] = useState(EMPTY_NEW_COMPANY);
   const [saving, setSaving] = useState(false);
+  // Move-to-scrap dialog
+  const [scrapTarget, setScrapTarget] = useState<StockItem | null>(null);
+  const [scrapQty, setScrapQty] = useState('');
+  const [scrapNotes, setScrapNotes] = useState('');
+  const [scrapSaving, setScrapSaving] = useState(false);
 
   // Only Steel stock on this page (records with no category are treated as Steel)
   const steelItems = state.stockItems.filter(s => (s.category ?? 'Steel') === 'Steel');
@@ -75,6 +80,26 @@ export default function InventoryPage() {
     setCompanyMode('existing');
     setNewCompany(EMPTY_NEW_COMPANY);
     setModalOpen(true);
+  };
+
+  const openScrap = (s: StockItem) => {
+    setScrapTarget(s);
+    setScrapQty(String(s.weightKg));   // default: scrap everything that's left
+    setScrapNotes('');
+  };
+
+  const scrapQtyNum = parseFloat(scrapQty) || 0;
+  const scrapValid = scrapTarget ? scrapQtyNum > 0 && scrapQtyNum <= scrapTarget.weightKg : false;
+
+  const handleScrap = async () => {
+    if (!scrapTarget || !scrapValid || scrapSaving) return;
+    setScrapSaving(true);
+    try {
+      await addScrap({ stockItemId: scrapTarget.id, weightKg: scrapQtyNum, notes: scrapNotes, date: todayISO() });
+      setScrapTarget(null);
+    } finally {
+      setScrapSaving(false);
+    }
   };
 
   // If the typed name matches a registered company, reuse it instead of duplicating
@@ -228,6 +253,9 @@ export default function InventoryPage() {
                     <td className="table-cell"><Badge label={s.status} /></td>
                     <td className="table-cell">
                       <div className="flex items-center gap-1">
+                        {s.weightKg > 0 && (
+                          <button onClick={() => openScrap(s)} title="Move to scrap" className="p-1.5 text-gray-400 hover:text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/20 rounded-lg transition-colors"><Recycle size={14} /></button>
+                        )}
                         <button onClick={() => openEdit(s)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"><Edit2 size={14} /></button>
                         <button onClick={() => setDeleteId(s.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"><Trash2 size={14} /></button>
                       </div>
@@ -387,6 +415,60 @@ export default function InventoryPage() {
             </div>
           )}
         </div>
+      </Modal>
+
+      {/* Move to Scrap Modal */}
+      <Modal
+        open={!!scrapTarget}
+        onClose={() => setScrapTarget(null)}
+        title="Move to Scrap"
+        subtitle={scrapTarget ? `${scrapTarget.steelType}${scrapTarget.grade ? ` (${scrapTarget.grade})` : ''} — batch ${scrapTarget.batchNumber || '—'}` : ''}
+        size="sm"
+        footer={
+          <>
+            <button onClick={() => setScrapTarget(null)} className="btn-secondary">Cancel</button>
+            <button onClick={handleScrap} className="btn-primary" disabled={!scrapValid || scrapSaving}>
+              <Recycle size={15} />
+              {scrapSaving ? 'Moving…' : 'Move to Scrap'}
+            </button>
+          </>
+        }
+      >
+        {scrapTarget && (
+          <div className="space-y-4">
+            <div className="bg-orange-50 dark:bg-orange-900/10 border border-orange-100 dark:border-orange-800/30 rounded-xl p-3 text-sm text-orange-700 dark:text-orange-300">
+              Remaining in this batch: <b>{formatWeight(scrapTarget.weightKg)}</b>
+            </div>
+            <div>
+              <label className="label">How much to scrap? (kg) *</label>
+              <input
+                value={scrapQty}
+                onChange={e => setScrapQty(e.target.value)}
+                type="number" min="0" max={scrapTarget.weightKg} step="0.01"
+                className="input"
+              />
+              {scrapQtyNum > scrapTarget.weightKg && (
+                <p className="text-xs text-red-500 font-medium mt-1">
+                  Only {formatWeight(scrapTarget.weightKg)} remaining — cannot scrap more.
+                </p>
+              )}
+              {scrapQtyNum > 0 && scrapQtyNum < scrapTarget.weightKg && (
+                <p className="text-[11px] text-gray-400 mt-1">
+                  {formatWeight(scrapTarget.weightKg - scrapQtyNum)} will stay in stock.
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="label">Reason / Notes</label>
+              <input
+                value={scrapNotes}
+                onChange={e => setScrapNotes(e.target.value)}
+                placeholder="e.g. rusted, bent pieces, offcuts"
+                className="input"
+              />
+            </div>
+          </div>
+        )}
       </Modal>
 
       <ConfirmDialog

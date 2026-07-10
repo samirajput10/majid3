@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, Building2, Package, Boxes, Users, FileText,
-  HardHat, ChevronRight, X, Zap, Briefcase,
+  HardHat, ChevronRight, X, Zap, Briefcase, Recycle,
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { cn } from '@/lib/utils';
@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { href: '/companies',  label: 'Companies',  icon: Building2 },
   { href: '/inventory',  label: 'Steel Stock', icon: Package },
   { href: '/cement',     label: 'Cement Stock', icon: Boxes },
+  { href: '/scrap',      label: 'Scrap',      icon: Recycle },
   { href: '/customers',  label: 'Customers',  icon: Users },
   { href: '/invoices',   label: 'Invoices',   icon: FileText },
   { href: '/workers',    label: 'Workers',    icon: HardHat },
