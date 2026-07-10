@@ -9,6 +9,7 @@ const InvoiceItemSchema = new Schema({
   quantity:    { type: Number, default: 1 },
   unit:        { type: String, default: 'piece' },
   pricePerKg:  { type: Number, default: 0 },
+  costPerKg:   { type: Number, default: 0 },   // buy rate snapshot for profit
   totalPrice:  { type: Number, default: 0 },
 }, { _id: true });
 

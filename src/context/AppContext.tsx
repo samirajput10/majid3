@@ -7,6 +7,7 @@ import type {
   AppState, Company, StockItem, ScrapItem, Customer, Invoice, Worker, WorkerB, AttendanceRecord,
 } from '@/lib/types';
 import { getStockStatus } from '@/lib/utils';
+import { invoiceProfit } from '@/lib/profit';
 
 // ─── Action types ─────────────────────────────────────────────────────────────
 type Action =
@@ -378,6 +379,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       })
       .reduce((s, i) => s + i.amountPaid, 0);
     const pendingPayments = state.invoices.reduce((s, i) => s + i.balance, 0);
+    let totalProfit = 0, monthlyProfit = 0;
+    state.invoices.forEach(i => {
+      const p = invoiceProfit(i, state.stockItems).profit;
+      totalProfit += p;
+      const d = new Date(i.createdAt);
+      if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) monthlyProfit += p;
+    });
     return {
       totalStockKg,
       totalStockValue,
@@ -385,6 +393,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       totalCustomers: state.customers.length,
       totalInvoices: state.invoices.length,
       monthlyRevenue,
+      monthlyProfit,
+      totalProfit,
       pendingPayments,
       activeWorkers: state.workers.filter(w => w.isActive).length,
       lowStockItems: state.stockItems.filter(s => s.status !== 'In Stock').length,

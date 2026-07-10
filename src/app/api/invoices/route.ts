@@ -4,7 +4,7 @@ import { Invoice } from '@/lib/models/Invoice';
 import { Customer } from '@/lib/models/Customer';
 import { StockItem } from '@/lib/models/StockItem';
 import { WorkerB } from '@/lib/models/WorkerB';
-import { stockShortages } from '@/lib/stockGuard';
+import { stockShortages, snapshotItemCosts } from '@/lib/stockGuard';
 
 // ── Deduct stock for each invoice item ──────────────────────────────────────
 async function deductStock(items: any[]) {
@@ -51,6 +51,9 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
+
+    // Stamp buy rates onto items for profit tracking
+    await snapshotItemCosts(body.items);
 
     // Auto-generate invoice number
     const count = await Invoice.countDocuments();

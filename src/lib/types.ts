@@ -84,6 +84,7 @@ export interface InvoiceItem {
   quantity: number;
   unit: string;
   pricePerKg: number;    // Steel: price per kg · Cement: price per pack
+  costPerKg?: number;    // buy rate snapshot from the batch (for profit)
   totalPrice: number;
 }
 
@@ -163,6 +164,8 @@ export interface DashboardStats {
   totalCustomers: number;
   totalInvoices: number;
   monthlyRevenue: number;
+  monthlyProfit: number;
+  totalProfit: number;
   pendingPayments: number;
   activeWorkers: number;
   lowStockItems: number;

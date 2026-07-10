@@ -1,5 +1,18 @@
 import { StockItem } from '@/lib/models/StockItem';
 
+// ── Cost snapshot ────────────────────────────────────────────────────────────
+// Stamps each invoice item with the batch's current purchase rate so profit
+// stays accurate even if the batch price is edited or deleted later.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function snapshotItemCosts(items: any[]) {
+  for (const item of items ?? []) {
+    if (!item.stockItemId) continue;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stock = await StockItem.findById(item.stockItemId).lean() as any;
+    if (stock) item.costPerKg = stock.pricePerKg ?? 0;
+  }
+}
+
 // ── Stock availability check ────────────────────────────────────────────────
 // Returns human-readable shortage messages for invoice items that request
 // more than their stock batch has. `oldByBatch` credits back quantities

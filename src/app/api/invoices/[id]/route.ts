@@ -3,7 +3,7 @@ import { connectDB } from '@/lib/db';
 import { Invoice } from '@/lib/models/Invoice';
 import { StockItem } from '@/lib/models/StockItem';
 import { WorkerB } from '@/lib/models/WorkerB';
-import { stockShortages } from '@/lib/stockGuard';
+import { stockShortages, snapshotItemCosts } from '@/lib/stockGuard';
 
 async function adjustStock(items: any[], direction: 1 | -1) {
   for (const item of items) {
@@ -43,6 +43,9 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
         { status: 400 }
       );
     }
+
+    // Stamp buy rates onto items for profit tracking
+    await snapshotItemCosts(body.items);
 
     // Restore old stock, then deduct new stock
     if (old?.items?.length) await adjustStock(old.items, +1);   // restore

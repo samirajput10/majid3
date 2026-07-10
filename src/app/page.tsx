@@ -115,7 +115,7 @@ export default function DashboardPage() {
         />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
         <StatCard
           title="Monthly Revenue"
           value={formatCurrency(stats.monthlyRevenue)}
@@ -124,6 +124,15 @@ export default function DashboardPage() {
           iconColor="text-green-600"
           iconBg="bg-green-50 dark:bg-green-900/20"
           trend={{ value: 14.5, label: 'vs last month' }}
+        />
+        <StatCard
+          title="Monthly Profit"
+          value={formatCurrency(stats.monthlyProfit)}
+          sub={`${formatCurrency(stats.totalProfit)} all time — click for details`}
+          icon={TrendingUp}
+          iconColor="text-emerald-600"
+          iconBg="bg-emerald-50 dark:bg-emerald-900/20"
+          onClick={() => { window.location.href = '/profit'; }}
         />
         <StatCard
           title="Pending Payments"
