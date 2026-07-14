@@ -52,6 +52,43 @@ export interface ScrapItem {
   notes?: string;
 }
 
+// ─── Company Payment Ledger ─────────────────────────────────────────────────
+export type LedgerEntryType = 'Purchase' | 'Payment';
+export type PaymentMethod = 'Bank Transfer' | 'Cheque' | 'Cash' | 'Other';
+export type LedgerBalanceLabel = 'Payable' | 'Advance' | 'Settled';
+
+export interface LedgerItem {
+  id: string;
+  name: string;
+  qty: number;
+  rate: number;
+  amount: number;
+}
+
+export interface LedgerEntry {
+  id: string;
+  companyId: string;
+  type: LedgerEntryType;
+  date: string;             // YYYY-MM-DD, user-assigned entry date
+  amount: number;           // Purchase: sum of items · Payment: amount paid
+  items?: LedgerItem[];     // Purchase only
+  method?: PaymentMethod;   // Payment only
+  reference?: string;       // Payment only
+  note?: string;
+  createdAt: string;        // timestamp — tie-breaks same-day ordering
+  balanceAfter: number;     // running balance right after this entry (signed: + = Payable, − = Advance)
+}
+
+// ─── Expense ────────────────────────────────────────────────────────────────
+export interface Expense {
+  id: string;
+  description: string;
+  amount: number;
+  date: string;        // YYYY-MM-DD
+  note?: string;
+  createdAt: string;
+}
+
 // ─── Customer ───────────────────────────────────────────────────────────────
 export interface Customer {
   id: string;
@@ -164,8 +201,10 @@ export interface DashboardStats {
   totalCustomers: number;
   totalInvoices: number;
   monthlyRevenue: number;
-  monthlyProfit: number;
-  totalProfit: number;
+  monthlyProfit: number;       // net of expenses
+  totalProfit: number;         // net of expenses
+  monthlyExpenses: number;
+  totalExpenses: number;
   pendingPayments: number;
   activeWorkers: number;
   lowStockItems: number;
@@ -176,6 +215,8 @@ export interface AppState {
   companies: Company[];
   stockItems: StockItem[];
   scrapItems: ScrapItem[];
+  ledgerEntries: LedgerEntry[];
+  expenses: Expense[];
   customers: Customer[];
   invoices: Invoice[];
   workers: Worker[];

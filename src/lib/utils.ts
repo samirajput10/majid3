@@ -6,15 +6,12 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 // ─── Currency formatting ──────────────────────────────────────────────────────
+// Always the full number — no Cr/L abbreviation anywhere in the app.
 export function formatCurrency(amount: number): string {
-  if (amount >= 10_000_000) return `PKR ${(amount / 10_000_000).toFixed(2)} Cr`;
-  if (amount >= 100_000)   return `PKR ${(amount / 100_000).toFixed(2)} L`;
-  return `PKR ${amount.toLocaleString('en-PK')}`;
+  return `PKR ${Math.round(amount).toLocaleString('en-PK')}`;
 }
 
-export function formatCurrencyFull(amount: number): string {
-  return `PKR ${amount.toLocaleString('en-PK')}`;
-}
+export const formatCurrencyFull = formatCurrency;
 
 // ─── Weight formatting ────────────────────────────────────────────────────────
 export function formatWeight(kg: number): string {
@@ -75,6 +72,9 @@ export function getStatusColor(status: string): string {
     'Out of Stock': 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
     'Active':    'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
     'Inactive':  'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+    'Payable':   'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+    'Advance':   'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+    'Settled':   'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
   };
   return map[status] ?? 'bg-gray-100 text-gray-600';
 }

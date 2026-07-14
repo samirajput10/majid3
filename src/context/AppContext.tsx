@@ -4,7 +4,7 @@ import React, {
   createContext, useContext, useReducer, useEffect, useCallback, useState,
 } from 'react';
 import type {
-  AppState, Company, StockItem, ScrapItem, Customer, Invoice, Worker, WorkerB, AttendanceRecord,
+  AppState, Company, StockItem, ScrapItem, LedgerEntry, Expense, Customer, Invoice, Worker, WorkerB, AttendanceRecord,
 } from '@/lib/types';
 import { getStockStatus } from '@/lib/utils';
 import { invoiceProfit } from '@/lib/profit';
@@ -22,6 +22,10 @@ type Action =
   | { type: 'DELETE_STOCK'; payload: string }
   | { type: 'ADD_SCRAP'; payload: ScrapItem }
   | { type: 'DELETE_SCRAP'; payload: string }
+  | { type: 'SET_LEDGER_FOR_COMPANY'; payload: { companyId: string; entries: LedgerEntry[] } }
+  | { type: 'ADD_EXPENSE'; payload: Expense }
+  | { type: 'UPDATE_EXPENSE'; payload: Expense }
+  | { type: 'DELETE_EXPENSE'; payload: string }
   | { type: 'ADD_CUSTOMER'; payload: Customer }
   | { type: 'UPDATE_CUSTOMER'; payload: Customer }
   | { type: 'DELETE_CUSTOMER'; payload: string }
@@ -37,7 +41,7 @@ type Action =
   | { type: 'SET_ATTENDANCE'; payload: AttendanceRecord };
 
 const initialState: AppState = {
-  companies: [], stockItems: [], scrapItems: [], customers: [],
+  companies: [], stockItems: [], scrapItems: [], ledgerEntries: [], expenses: [], customers: [],
   invoices: [], workers: [], workerBs: [], attendance: [],
   darkMode: false, sidebarOpen: true,
 };
@@ -73,6 +77,19 @@ function reducer(state: AppState, action: Action): AppState {
 
     case 'ADD_SCRAP':    return { ...state, scrapItems: [action.payload, ...state.scrapItems] };
     case 'DELETE_SCRAP': return { ...state, scrapItems: state.scrapItems.filter(s => s.id !== action.payload) };
+
+    case 'SET_LEDGER_FOR_COMPANY':
+      return {
+        ...state,
+        ledgerEntries: [
+          ...state.ledgerEntries.filter(e => e.companyId !== action.payload.companyId),
+          ...action.payload.entries,
+        ],
+      };
+
+    case 'ADD_EXPENSE':    return { ...state, expenses: [action.payload, ...state.expenses] };
+    case 'UPDATE_EXPENSE': return { ...state, expenses: state.expenses.map(e => e.id === action.payload.id ? action.payload : e) };
+    case 'DELETE_EXPENSE': return { ...state, expenses: state.expenses.filter(e => e.id !== action.payload) };
 
     case 'ADD_CUSTOMER':    return { ...state, customers: [...state.customers, action.payload] };
     case 'UPDATE_CUSTOMER': return { ...state, customers: state.customers.map(c => c.id === action.payload.id ? action.payload : c) };
@@ -110,6 +127,18 @@ function reducer(state: AppState, action: Action): AppState {
   }
 }
 
+// ─── Ledger entry input (shared shape for add/update) ─────────────────────────
+interface LedgerEntryInput {
+  companyId: string;
+  type: 'Purchase' | 'Payment';
+  date: string;
+  note?: string;
+  items?: { name: string; qty: number; rate: number }[];
+  amount?: number;
+  method?: 'Bank Transfer' | 'Cheque' | 'Cash' | 'Other';
+  reference?: string;
+}
+
 // ─── API helpers ──────────────────────────────────────────────────────────────
 async function api<T>(url: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
@@ -139,6 +168,12 @@ interface AppContextType {
   addScrap: (data: { stockItemId: string; weightKg: number; notes?: string; date?: string }) => Promise<void>;
   deleteScrap: (id: string) => Promise<void>;
   restoreScrap: (id: string) => Promise<void>;
+  addLedgerEntry: (data: LedgerEntryInput) => Promise<void>;
+  updateLedgerEntry: (id: string, data: LedgerEntryInput) => Promise<void>;
+  deleteLedgerEntry: (id: string, companyId: string) => Promise<void>;
+  addExpense: (data: Omit<Expense, 'id' | 'createdAt'>) => Promise<void>;
+  updateExpense: (e: Expense) => Promise<void>;
+  deleteExpense: (id: string) => Promise<void>;
   addCustomer: (data: Omit<Customer, 'id' | 'createdAt' | 'totalPurchases' | 'totalSpent' | 'pendingBalance'>) => Promise<Customer>;
   updateCustomer: (c: Customer) => Promise<void>;
   deleteCustomer: (id: string) => Promise<void>;
@@ -175,11 +210,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async function load() {
       try {
         setLoading(true);
-        const [companies, stockItems, scrapItems, customers, invoices, workers, workerBs, attendance] =
+        const [companies, stockItems, scrapItems, ledgerEntries, expenses, customers, invoices, workers, workerBs, attendance] =
           await Promise.all([
             api<Company[]>('/api/companies').then(normAll),
             api<StockItem[]>('/api/stock').then(normAll),
             api<ScrapItem[]>('/api/scrap').then(normAll),
+            api<LedgerEntry[]>('/api/ledger').then(normAll),
+            api<Expense[]>('/api/expenses').then(normAll),
             api<Customer[]>('/api/customers').then(normAll),
             api<Invoice[]>('/api/invoices').then(normAll),
             api<Worker[]>('/api/workers').then(normAll),
@@ -188,7 +225,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ]);
         dispatch({
           type: 'SET_DATA',
-          payload: { companies, stockItems, scrapItems, customers, invoices, workers, workerBs, attendance },
+          payload: { companies, stockItems, scrapItems, ledgerEntries, expenses, customers, invoices, workers, workerBs, attendance },
         });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : 'Failed to load data from database';
@@ -280,6 +317,52 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const freshStock = await api<StockItem[]>('/api/stock');
       dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock) } });
     } catch { /* non-critical */ }
+  }, []);
+
+  // ── Company payment ledger ──────────────────────────────────────────────
+  // Running balances depend on a company's whole entry history, so after any
+  // mutation we refetch that company's slice rather than patch one entry.
+  const refreshLedgerForCompany = useCallback(async (companyId: string) => {
+    const fresh = normAll(await api<LedgerEntry[]>(`/api/ledger?companyId=${companyId}`));
+    dispatch({ type: 'SET_LEDGER_FOR_COMPANY', payload: { companyId, entries: fresh } });
+  }, []);
+
+  const addLedgerEntry = useCallback(async (data: LedgerEntryInput) => {
+    await api('/api/ledger', { method: 'POST', body: JSON.stringify(data) });
+    await refreshLedgerForCompany(data.companyId);
+    if (data.type === 'Purchase') {
+      // A matching stock item may have been bumped server-side
+      try {
+        const freshStock = await api<StockItem[]>('/api/stock');
+        dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock) } });
+      } catch { /* non-critical */ }
+    }
+  }, [refreshLedgerForCompany]);
+
+  const updateLedgerEntry = useCallback(async (id: string, data: LedgerEntryInput) => {
+    await api(`/api/ledger/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+    await refreshLedgerForCompany(data.companyId);
+  }, [refreshLedgerForCompany]);
+
+  const deleteLedgerEntry = useCallback(async (id: string, companyId: string) => {
+    await api(`/api/ledger/${id}`, { method: 'DELETE' });
+    await refreshLedgerForCompany(companyId);
+  }, [refreshLedgerForCompany]);
+
+  // ── Expenses ────────────────────────────────────────────────────────────
+  const addExpense = useCallback(async (data: Omit<Expense, 'id' | 'createdAt'>) => {
+    const e = norm(await api<Expense>('/api/expenses', { method: 'POST', body: JSON.stringify(data) }));
+    dispatch({ type: 'ADD_EXPENSE', payload: e });
+  }, []);
+
+  const updateExpense = useCallback(async (e: Expense) => {
+    const updated = norm(await api<Expense>(`/api/expenses/${e.id}`, { method: 'PUT', body: JSON.stringify(e) }));
+    dispatch({ type: 'UPDATE_EXPENSE', payload: updated });
+  }, []);
+
+  const deleteExpense = useCallback(async (id: string) => {
+    await api(`/api/expenses/${id}`, { method: 'DELETE' });
+    dispatch({ type: 'DELETE_EXPENSE', payload: id });
   }, []);
 
   const addCustomer = useCallback(async (
@@ -387,12 +470,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       })
       .reduce((s, i) => s + i.amountPaid, 0);
     const pendingPayments = state.invoices.reduce((s, i) => s + i.balance, 0);
-    let totalProfit = 0, monthlyProfit = 0;
+    let grossProfit = 0, grossMonthlyProfit = 0;
     state.invoices.forEach(i => {
       const p = invoiceProfit(i, state.stockItems).profit;
-      totalProfit += p;
+      grossProfit += p;
       const d = new Date(i.createdAt);
-      if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) monthlyProfit += p;
+      if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) grossMonthlyProfit += p;
+    });
+    let totalExpenses = 0, monthlyExpenses = 0;
+    state.expenses.forEach(e => {
+      totalExpenses += e.amount;
+      const d = new Date(e.date);
+      if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) monthlyExpenses += e.amount;
     });
     return {
       totalStockKg,
@@ -401,8 +490,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       totalCustomers: state.customers.length,
       totalInvoices: state.invoices.length,
       monthlyRevenue,
-      monthlyProfit,
-      totalProfit,
+      monthlyProfit: grossMonthlyProfit - monthlyExpenses,
+      totalProfit: grossProfit - totalExpenses,
+      monthlyExpenses,
+      totalExpenses,
       pendingPayments,
       activeWorkers: state.workers.filter(w => w.isActive).length,
       lowStockItems: state.stockItems.filter(s => s.status !== 'In Stock').length,
@@ -415,6 +506,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       addCompany, updateCompany, deleteCompany,
       addStock, updateStock, deleteStock,
       addScrap, deleteScrap, restoreScrap,
+      addLedgerEntry, updateLedgerEntry, deleteLedgerEntry,
+      addExpense, updateExpense, deleteExpense,
       addCustomer, updateCustomer, deleteCustomer,
       addInvoice, updateInvoice, deleteInvoice,
       addWorker, updateWorker, deleteWorker,

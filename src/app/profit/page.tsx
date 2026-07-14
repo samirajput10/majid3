@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Search, TrendingUp, DollarSign, Percent, FileText } from 'lucide-react';
+import { Search, TrendingUp, DollarSign, Percent, FileText, Receipt } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import EmptyState from '@/components/ui/EmptyState';
 import StatCard from '@/components/ui/StatCard';
@@ -29,18 +29,27 @@ export default function ProfitPage() {
     return inv.invoiceNumber.toLowerCase().includes(q) || inv.customerName.toLowerCase().includes(q);
   });
 
-  const totalProfit = rows.reduce((s, r) => s + r.p.profit, 0);
+  const grossProfit = rows.reduce((s, r) => s + r.p.profit, 0);
   const totalRevenue = rows.reduce((s, r) => s + r.p.revenue, 0);
   const now = new Date();
-  const monthProfit = rows
+  const grossMonthProfit = rows
     .filter(({ inv }) => {
       const d = new Date(inv.createdAt);
       return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
     })
     .reduce((s, r) => s + r.p.profit, 0);
+
+  // Expenses reduce profit — tracked separately on the Expenses page
+  const totalExpenses = state.expenses.reduce((s, e) => s + e.amount, 0);
+  const monthExpenses = state.expenses
+    .filter(e => { const d = new Date(e.date); return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth(); })
+    .reduce((s, e) => s + e.amount, 0);
+
+  const totalProfit = grossProfit - totalExpenses;
+  const monthProfit = grossMonthProfit - monthExpenses;
   const margin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
 
-  // Last 6 months profit chart
+  // Last 6 months profit chart — invoice profit for that month minus that month's expenses
   const monthlyData = useMemo(() => {
     const months = Array.from({ length: 6 }, (_, i) => {
       const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
@@ -52,9 +61,14 @@ export default function ProfitPage() {
       const key = `${d.getFullYear()}-${d.getMonth()}`;
       map[key] = (map[key] ?? 0) + p.profit;
     });
+    state.expenses.forEach(e => {
+      const d = new Date(e.date);
+      const key = `${d.getFullYear()}-${d.getMonth()}`;
+      map[key] = (map[key] ?? 0) - e.amount;
+    });
     return months.map(m => ({ month: m.label, profit: map[`${m.year}-${m.month}`] ?? 0 }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows]);
+  }, [rows, state.expenses]);
 
   return (
     <div className="space-y-6">
@@ -62,17 +76,22 @@ export default function ProfitPage() {
       <div>
         <h1 className="text-xl font-bold text-gray-900 dark:text-white">Profit</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          Profit = (sell rate − buy rate) × quantity, minus invoice discount. Extra charges are not counted.
+          Profit = (sell rate − buy rate) × quantity, minus invoice discount and business expenses.
         </p>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard title="Total Profit" value={formatCurrency(totalProfit)} sub="All time" icon={TrendingUp}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+        <StatCard title="Net Profit" value={formatCurrency(totalProfit)}
+          sub={`Gross ${formatCurrency(grossProfit)} − Expenses ${formatCurrency(totalExpenses)}`}
+          icon={TrendingUp}
           iconColor="text-emerald-600" iconBg="bg-emerald-50 dark:bg-emerald-900/20" />
-        <StatCard title="This Month" value={formatCurrency(monthProfit)} icon={TrendingUp}
+        <StatCard title="This Month" value={formatCurrency(monthProfit)} sub="Net of expenses" icon={TrendingUp}
           iconColor="text-green-600" iconBg="bg-green-50 dark:bg-green-900/20" />
-        <StatCard title="Profit Margin" value={`${margin.toFixed(1)}%`} sub="of revenue" icon={Percent}
+        <StatCard title="Total Expenses" value={formatCurrency(totalExpenses)} sub="Click to manage →" icon={Receipt}
+          iconColor="text-red-600" iconBg="bg-red-50 dark:bg-red-900/20"
+          onClick={() => { window.location.href = '/expenses'; }} />
+        <StatCard title="Profit Margin" value={`${margin.toFixed(1)}%`} sub="net, of revenue" icon={Percent}
           iconColor="text-blue-600" iconBg="bg-blue-50 dark:bg-blue-900/20" />
         <StatCard title="Total Revenue" value={formatCurrency(totalRevenue)} icon={DollarSign}
           iconColor="text-teal-600" iconBg="bg-teal-50 dark:bg-teal-900/20" />

@@ -18,6 +18,8 @@ const COLLECTIONS = [
   'customers',
   'stockitems',
   'scraps',
+  'ledgerentries',
+  'expenses',
   'invoices',
   'workers',
   'workerbs',
