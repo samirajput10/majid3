@@ -125,6 +125,9 @@ async function startServer(cfg) {
       PORT: String(APP_PORT),
       HOSTNAME: '127.0.0.1',
       MONGODB_URI: LOCAL_URI,
+      // Lets the TopBar "Save" button push the local DB to the cloud on demand
+      // (POST /api/sync), independent of the background sync loop below.
+      ATLAS_URI: cfg.atlasUri || '',
       AUTH_EMAIL: cfg.authEmail || 'majid@admin.com',
       AUTH_PASSWORD: cfg.authPassword || 'majid123',
     },

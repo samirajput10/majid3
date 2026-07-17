@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Menu, Search, Moon, Sun, Bell, X, LogOut, Check, CloudOff, RefreshCw } from 'lucide-react';
+import { Menu, Search, Moon, Sun, Bell, X, LogOut, Check, Save, RefreshCw } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { matchPhone } from '@/lib/utils';
 
@@ -148,11 +148,11 @@ export default function TopBar() {
             onClick={() => syncNow()}
             disabled={syncStatus === 'syncing'}
             title={
-              syncStatus === 'saved' ? 'All changes saved'
-                : syncStatus === 'syncing' ? 'Syncing…'
-                : `${pendingCount} change${pendingCount === 1 ? '' : 's'} waiting to sync — click to retry now`
+              syncStatus === 'saved' ? 'All changes synced to the cloud'
+                : syncStatus === 'syncing' ? 'Syncing to the cloud…'
+                : 'Unsynced changes — click to push them to the cloud database'
             }
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:cursor-default ${
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:cursor-default focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
               syncStatus === 'pending'
                 ? 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30'
                 : syncStatus === 'syncing'
@@ -161,10 +161,12 @@ export default function TopBar() {
             }`}
           >
             {syncStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" />
-              : syncStatus === 'pending' ? <CloudOff size={14} />
+              : syncStatus === 'pending' ? <Save size={14} />
               : <Check size={14} />}
             <span className="hidden sm:inline">
-              {syncStatus === 'syncing' ? 'Syncing…' : syncStatus === 'pending' ? `Pending (${pendingCount})` : 'Saved'}
+              {syncStatus === 'syncing' ? 'Syncing…'
+                : syncStatus === 'pending' ? (pendingCount > 0 ? `Save (${pendingCount})` : 'Save')
+                : 'Saved'}
             </span>
           </button>
           <button

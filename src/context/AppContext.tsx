@@ -9,7 +9,7 @@ import type {
 import { getStockStatus, generateObjectId } from '@/lib/utils';
 import { invoiceProfit } from '@/lib/profit';
 import { computeRunningBalances } from '@/lib/ledger';
-import { getQueue, enqueue, flushQueue } from '@/lib/syncQueue';
+import { getQueue, enqueue, flushQueue, isDirty, markDirty, clearDirty } from '@/lib/syncQueue';
 
 // ─── Action types ─────────────────────────────────────────────────────────────
 type Action =
@@ -151,12 +151,19 @@ interface LedgerEntryInput {
 // gets back an optimistic value to apply locally right away, and the real
 // request replays (in order) once syncNow()/reconnect flushes the queue.
 // GET requests are untouched: they fail normally, same as before.
+// Fired after every mutation (queued or not) so the provider can flip the
+// TopBar button to its unsaved "Save" state.
+function notifyMutation() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('sv:mutation'));
+}
+
 async function api<T>(url: string, opts?: RequestInit, offlineFallback?: () => T): Promise<T> {
   const method = (opts?.method ?? 'GET').toUpperCase();
   const isMutation = method !== 'GET';
 
   const queueAndFallback = (): T => {
     enqueue({ url, method, body: opts?.body as string | undefined });
+    notifyMutation();
     return offlineFallback!();
   };
 
@@ -179,6 +186,7 @@ async function api<T>(url: string, opts?: RequestInit, offlineFallback?: () => T
       try { const j = await res.json(); detail = j.error ?? ''; } catch { /* ignore */ }
       throw new Error(`API error ${res.status}: ${url}${detail ? ` — ${detail}` : ''}`);
     }
+    if (isMutation) notifyMutation();
     return res.json();
   } catch (err) {
     // A real fetch/network failure surfaces as a TypeError — anything else
@@ -306,22 +314,38 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     document.documentElement.classList.toggle('dark', state.darkMode);
   }, [state.darkMode]);
 
-  // ── Offline sync ────────────────────────────────────────────────────────
+  // ── Sync state ──────────────────────────────────────────────────────────
+  // "pending" (button shows "Save") whenever there are queued offline writes
+  // OR any change has landed since the last successful sync (dirty flag).
   const refreshPendingCount = useCallback(() => {
     const n = getQueue().length;
     setPendingCount(n);
-    setSyncStatus(n > 0 ? 'pending' : 'saved');
+    if (!syncingRef.current) setSyncStatus(n > 0 || isDirty() ? 'pending' : 'saved');
   }, []);
 
   const syncNow = useCallback(async () => {
     if (syncingRef.current) return;
-    if (getQueue().length === 0) { refreshPendingCount(); return; }
     syncingRef.current = true;
     setSyncStatus('syncing');
     try {
-      const { success } = await flushQueue();
-      if (success) {
-        try { await reloadAll(); } catch { /* will retry on the next successful sync */ }
+      // 1. Replay any writes that never reached the server (browser offline)
+      let ok = true;
+      if (getQueue().length > 0) {
+        ok = (await flushQueue()).success;
+      }
+      // 2. Push the local database to the cloud (desktop app) — 'idle' on web
+      if (ok) {
+        try {
+          const res = await fetch('/api/sync', { method: 'POST' });
+          const j = await res.json().catch(() => ({ mode: 'error' }));
+          ok = res.ok && j.mode !== 'offline' && j.mode !== 'error';
+        } catch {
+          ok = false; // network down — stay pending, retry later
+        }
+      }
+      if (ok) {
+        clearDirty();
+        try { await reloadAll(); } catch { /* non-critical */ }
       }
     } finally {
       syncingRef.current = false;
@@ -331,16 +355,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     refreshPendingCount();
-    const handleOnline = () => { syncNow(); };
+    // Any mutation anywhere in the app un-presses the button back to "Save"
+    const handleMutation = () => { markDirty(); refreshPendingCount(); };
+    window.addEventListener('sv:mutation', handleMutation);
+    // Auto-sync only when there are queued writes that never reached the
+    // server — the dirty-only state waits for the user to click Save.
+    const handleOnline = () => { if (getQueue().length > 0) syncNow(); };
     const handleOffline = () => { refreshPendingCount(); };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-    if (navigator.onLine) syncNow(); // catch up on a queue left over from a previous session
-    // Safety net in case the browser's `online` event doesn't fire reliably
+    if (navigator.onLine && getQueue().length > 0) syncNow(); // leftover queue from a previous session
     const retryTimer = setInterval(() => {
       if (navigator.onLine && getQueue().length > 0) syncNow();
     }, 30000);
     return () => {
+      window.removeEventListener('sv:mutation', handleMutation);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       clearInterval(retryTimer);

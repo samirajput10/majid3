@@ -43,6 +43,29 @@ export function dequeue(id: string) {
   saveQueue(getQueue().filter(r => r.id !== id));
 }
 
+// ─── Dirty flag ─────────────────────────────────────────────────────────────
+// Set whenever any mutation lands (even one that reached the local/server DB
+// fine) and cleared only by a successful sync. This is what flips the TopBar
+// button from "Saved" to "Save" — on the desktop app every write succeeds
+// against the LOCAL database, so the queue alone can't tell us whether the
+// cloud has the latest data; this flag tracks "changed since last sync".
+const DIRTY_KEY = 'steelvault:dirty';
+
+export function isDirty(): boolean {
+  if (typeof window === 'undefined') return false;
+  try { return window.localStorage.getItem(DIRTY_KEY) === '1'; } catch { return false; }
+}
+
+export function markDirty() {
+  if (typeof window === 'undefined') return;
+  try { window.localStorage.setItem(DIRTY_KEY, '1'); } catch { /* ignore */ }
+}
+
+export function clearDirty() {
+  if (typeof window === 'undefined') return;
+  try { window.localStorage.removeItem(DIRTY_KEY); } catch { /* ignore */ }
+}
+
 export interface FlushResult {
   success: boolean; // true once the queue is fully drained
 }
