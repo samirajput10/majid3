@@ -1,10 +1,18 @@
 import { Schema, model, models } from 'mongoose';
 
 const LedgerItemSchema = new Schema({
-  name:   { type: String, required: true },
-  qty:    { type: Number, required: true },
-  rate:   { type: Number, required: true },
+  name:   { type: String, required: true },   // display cache: steelType (+ grade)
+  qty:    { type: Number, required: true },    // weightKg delta (kg for Steel, packs for Cement)
+  rate:   { type: Number, required: true },    // pricePerKg/pack used for this entry's amount
   amount: { type: Number, default: 0 },
+  stockItemId:   { type: String, default: '' },              // real link, set server-side on save
+  category:      { type: String, enum: ['Steel', 'Cement'], default: 'Steel' },
+  grade:         { type: String, default: '' },
+  unit:          { type: String, enum: ['kg', 'ton', 'piece', 'pack'], default: 'piece' },
+  quantityUnits: { type: Number, default: 0 },  // piece/ton count, mirrors StockItem.quantity
+  batchNumber:   { type: String, default: '' }, // only used when creating a new StockItem
+  location:      { type: String, default: '' },
+  notes:         { type: String, default: '' },
 }, { _id: true });
 
 const LedgerEntrySchema = new Schema({

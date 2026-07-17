@@ -10,8 +10,8 @@ import StatCard from '@/components/ui/StatCard';
 import Badge from '@/components/ui/Badge';
 import { formatCurrency, formatWeight, formatDate, todayISO } from '@/lib/utils';
 import type { StockItem, SteelType } from '@/lib/types';
+import { STEEL_TYPES } from '@/lib/constants';
 
-const STEEL_TYPES: SteelType[] = ['Rod', 'Sheet', 'Bar', 'Angle', 'Channel', 'Pipe', 'Coil', 'Beam'];
 const EMPTY_FORM = {
   steelType: 'Rod' as SteelType, grade: '', weightKg: '', quantity: '',
   unit: 'piece', pricePerKg: '', companyId: '', batchNumber: '', dateAdded: todayISO(), location: '', notes: '',

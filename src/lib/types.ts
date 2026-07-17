@@ -63,6 +63,14 @@ export interface LedgerItem {
   qty: number;
   rate: number;
   amount: number;
+  stockItemId?: string;    // real link to the StockItem this line created/bumped
+  category?: ProductCategory;
+  grade?: string;
+  unit?: 'kg' | 'ton' | 'piece' | 'pack';
+  quantityUnits?: number;  // piece/ton count, mirrors StockItem.quantity
+  batchNumber?: string;    // only used when this line created a new StockItem
+  location?: string;
+  notes?: string;
 }
 
 export interface LedgerEntry {

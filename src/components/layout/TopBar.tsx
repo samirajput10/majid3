@@ -2,12 +2,12 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Menu, Search, Moon, Sun, Bell, X, LogOut } from 'lucide-react';
+import { Menu, Search, Moon, Sun, Bell, X, LogOut, Check, CloudOff, RefreshCw } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { matchPhone } from '@/lib/utils';
 
 export default function TopBar() {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, syncStatus, pendingCount, syncNow } = useApp();
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<{ type: string; label: string; sub: string; href: string }[]>([]);
@@ -144,6 +144,29 @@ export default function TopBar() {
           <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
             M
           </div>
+          <button
+            onClick={() => syncNow()}
+            disabled={syncStatus === 'syncing'}
+            title={
+              syncStatus === 'saved' ? 'All changes saved'
+                : syncStatus === 'syncing' ? 'Syncing…'
+                : `${pendingCount} change${pendingCount === 1 ? '' : 's'} waiting to sync — click to retry now`
+            }
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:cursor-default ${
+              syncStatus === 'pending'
+                ? 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/30'
+                : syncStatus === 'syncing'
+                ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20'
+                : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700'
+            }`}
+          >
+            {syncStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" />
+              : syncStatus === 'pending' ? <CloudOff size={14} />
+              : <Check size={14} />}
+            <span className="hidden sm:inline">
+              {syncStatus === 'syncing' ? 'Syncing…' : syncStatus === 'pending' ? `Pending (${pendingCount})` : 'Saved'}
+            </span>
+          </button>
           <button
             onClick={handleLogout}
             className="p-1.5 rounded-lg text-gray-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"

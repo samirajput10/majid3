@@ -10,8 +10,8 @@ import StatCard from '@/components/ui/StatCard';
 import Badge from '@/components/ui/Badge';
 import { formatCurrency, formatDate, todayISO } from '@/lib/utils';
 import type { StockItem, CementType } from '@/lib/types';
+import { CEMENT_TYPES } from '@/lib/constants';
 
-const CEMENT_TYPES: CementType[] = ['OPC', 'SRC', 'White Cement', 'Block Cement', 'Other'];
 const EMPTY_FORM = {
   cementType: 'OPC' as CementType, grade: '', packs: '', pricePerPack: '',
   companyId: '', batchNumber: '', dateAdded: todayISO(), location: '', notes: '',

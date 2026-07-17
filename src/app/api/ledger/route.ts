@@ -1,43 +1,9 @@
 import { NextResponse } from 'next/server';
 import { connectDB } from '@/lib/db';
 import { LedgerEntry } from '@/lib/models/LedgerEntry';
-import { StockItem } from '@/lib/models/StockItem';
+import { Company } from '@/lib/models/Company';
 import { computeRunningBalances } from '@/lib/ledger';
-
-// ── Best-effort: bump an existing stock item's quantity when a purchase line
-// item's name matches one (case-insensitive, scoped to this company). Never
-// blocks or fails the purchase — this is a "nice to have" only.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function tryBumpStock(companyId: string, items: any[]) {
-  for (const item of items ?? []) {
-    try {
-      const name = String(item.name ?? '').trim().toLowerCase();
-      if (!name || !item.qty) continue;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const candidates = await StockItem.find({ companyId }).lean() as any[];
-      const match = candidates.find(s => {
-        const bare = String(s.steelType ?? '').trim().toLowerCase();
-        const withGrade = s.grade ? `${bare} ${String(s.grade).trim().toLowerCase()}` : bare;
-        return bare === name || withGrade === name;
-      });
-      if (!match) continue;
-
-      await StockItem.findByIdAndUpdate(match._id, {
-        $inc: { weightKg: item.qty, quantity: item.qty },
-      });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const updated = await StockItem.findById(match._id).lean() as any;
-      if (updated) {
-        const lowThreshold = updated.category === 'Cement' ? 50 : 500;
-        const status = updated.weightKg <= 0 ? 'Out of Stock'
-          : updated.weightKg < lowThreshold ? 'Low Stock' : 'In Stock';
-        await StockItem.findByIdAndUpdate(match._id, { status });
-      }
-    } catch (err) {
-      console.error('[POST /api/ledger] stock bump skipped for item', item, err);
-    }
-  }
-}
+import { applyStockForItems } from '@/lib/stockSync';
 
 export async function GET(req: Request) {
   try {
@@ -88,6 +54,14 @@ export async function POST(req: Request) {
         qty: Number(it.qty) || 0,
         rate: Number(it.rate) || 0,
         amount: (Number(it.qty) || 0) * (Number(it.rate) || 0),
+        stockItemId: it.stockItemId || '',
+        category: it.category || 'Steel',
+        grade: it.grade || '',
+        unit: it.unit || 'piece',
+        quantityUnits: Number(it.quantityUnits) || 0,
+        batchNumber: it.batchNumber || '',
+        location: it.location || '',
+        notes: it.notes || '',
       }));
       if (body.items.some((it: { name: string; qty: number }) => !it.name || it.qty <= 0)) {
         return NextResponse.json({ error: 'Each item needs a name and a quantity above zero' }, { status: 400 });
@@ -95,6 +69,11 @@ export async function POST(req: Request) {
       body.amount = body.items.reduce((s: number, it: { amount: number }) => s + it.amount, 0);
       body.method = undefined;
       body.reference = '';
+
+      // Create/bump the real StockItem(s) first so stockItemId is persisted on the entry.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const company = await Company.findById(body.companyId).lean() as any;
+      body.items = await applyStockForItems(body.companyId, company?.name || '', body.items, body.date);
     } else if (body.type === 'Payment') {
       body.amount = Number(body.amount) || 0;
       if (body.amount <= 0) {
@@ -109,11 +88,6 @@ export async function POST(req: Request) {
     }
 
     const entry = await LedgerEntry.create(body);
-
-    if (body.type === 'Purchase') {
-      await tryBumpStock(body.companyId, body.items);
-    }
-
     return NextResponse.json(entry, { status: 201 });
   } catch (err) {
     console.error('[POST /api/ledger]', err);

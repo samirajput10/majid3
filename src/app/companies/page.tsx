@@ -14,6 +14,7 @@ import Badge from '@/components/ui/Badge';
 import { formatCurrency, formatCurrencyFull, formatWeight, formatDate, generateId, todayISO } from '@/lib/utils';
 import type { Company, LedgerEntry, PaymentMethod } from '@/lib/types';
 import { getLedgerSummary, getBalanceLabel } from '@/lib/ledger';
+import { STEEL_TYPES, CEMENT_TYPES } from '@/lib/constants';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
@@ -21,7 +22,22 @@ import { CHART_COLORS } from '@/lib/utils';
 
 const EMPTY_FORM = { name: '', contactPerson: '', phone: '', address: '', email: '' };
 const PAYMENT_METHODS: PaymentMethod[] = ['Bank Transfer', 'Cheque', 'Cash', 'Other'];
-const newLedgerItem = () => ({ id: generateId('li'), name: '', qty: '', rate: '' });
+const newLedgerItem = () => ({
+  id: generateId('li'),
+  mode: 'existing' as 'existing' | 'new',
+  stockItemId: '',
+  name: '',
+  qty: '',
+  rate: '',
+  category: 'Steel' as 'Steel' | 'Cement',
+  grade: '',
+  unit: 'piece' as 'kg' | 'ton' | 'piece' | 'pack',
+  quantity: '',
+  batchNumber: '',
+  location: '',
+  notes: '',
+});
+type LedgerItemForm = ReturnType<typeof newLedgerItem>;
 
 export default function CompaniesPage() {
   const { state, addCompany, updateCompany, deleteCompany, addLedgerEntry, updateLedgerEntry, deleteLedgerEntry } = useApp();
@@ -109,6 +125,8 @@ export default function CompaniesPage() {
   // used elsewhere in this app (close the parent, not stack over it).
   const ledgerModalVisible = !!ledgerCompanyId && !entryFormType && !detailEntryId;
 
+  const ledgerCompanyStock = ledgerCompanyId ? state.stockItems.filter(s => s.companyId === ledgerCompanyId) : [];
+
   const companyLedger = ledgerCompanyId ? state.ledgerEntries.filter(e => e.companyId === ledgerCompanyId) : [];
   const sortedLedger = [...companyLedger].sort((a, b) => {
     if (a.date !== b.date) return b.date.localeCompare(a.date);
@@ -139,7 +157,24 @@ export default function CompaniesPage() {
   const openPurchaseForm = (entry?: LedgerEntry) => {
     if (entry) {
       setEditingEntry(entry);
-      setPurchaseItems((entry.items ?? []).map(it => ({ id: it.id || generateId('li'), name: it.name, qty: String(it.qty), rate: String(it.rate) })));
+      setPurchaseItems((entry.items ?? []).map(it => ({
+        id: it.id || generateId('li'),
+        // Items already linked to a real stock batch stay "existing"; items saved
+        // before this link existed (or that failed to link) fall back to "new" so
+        // they're still editable and will create a fresh stock batch on save.
+        mode: it.stockItemId ? 'existing' as const : 'new' as const,
+        stockItemId: it.stockItemId || '',
+        name: it.name,
+        qty: String(it.qty),
+        rate: String(it.rate),
+        category: (it.category as 'Steel' | 'Cement') || 'Steel',
+        grade: it.grade || '',
+        unit: (it.unit as 'kg' | 'ton' | 'piece' | 'pack') || 'piece',
+        quantity: String(it.quantityUnits ?? 0),
+        batchNumber: it.batchNumber || '',
+        location: it.location || '',
+        notes: it.notes || '',
+      })));
       setPurchaseDate(entry.date);
       setPurchaseNote(entry.note ?? '');
     } else {
@@ -170,18 +205,47 @@ export default function CompaniesPage() {
     setEntryFormType('Payment');
   };
 
-  const updatePurchaseItem = (idx: number, field: 'name' | 'qty' | 'rate', value: string) => {
+  const updatePurchaseItem = (idx: number, field: keyof LedgerItemForm, value: string) => {
     setPurchaseItems(items => items.map((it, i) => i === idx ? { ...it, [field]: value } : it));
+  };
+  const setItemMode = (idx: number, mode: 'existing' | 'new') => {
+    setPurchaseItems(items => items.map((it, i) => i === idx ? { ...newLedgerItem(), id: it.id, mode } : it));
+  };
+  const selectExistingStock = (idx: number, stockItemId: string) => {
+    const stock = ledgerCompanyStock.find(s => s.id === stockItemId);
+    setPurchaseItems(items => items.map((it, i) => i === idx ? {
+      ...it,
+      stockItemId,
+      name: stock ? `${stock.steelType}${stock.grade ? ` ${stock.grade}` : ''}` : '',
+      category: (stock?.category as 'Steel' | 'Cement') ?? it.category,
+      grade: stock?.grade ?? '',
+      unit: (stock?.unit as 'kg' | 'ton' | 'piece' | 'pack') ?? it.unit,
+      rate: stock ? String(stock.pricePerKg) : it.rate,
+    } : it));
   };
   const purchaseItemAmount = (it: { qty: string; rate: string }) => (parseFloat(it.qty) || 0) * (parseFloat(it.rate) || 0);
   const purchaseTotal = purchaseItems.reduce((s, it) => s + purchaseItemAmount(it), 0);
-  const purchaseValid = purchaseItems.some(it => it.name.trim() && parseFloat(it.qty) > 0);
+  const purchaseValid = purchaseItems.some(it =>
+    (it.mode === 'existing' ? !!it.stockItemId : it.name.trim()) && parseFloat(it.qty) > 0
+  );
 
   const handleSavePurchase = async () => {
     if (!ledgerCompanyId || !purchaseValid || ledgerSaving) return;
     const items = purchaseItems
-      .filter(it => it.name.trim() && parseFloat(it.qty) > 0)
-      .map(it => ({ name: it.name.trim(), qty: parseFloat(it.qty) || 0, rate: parseFloat(it.rate) || 0 }));
+      .filter(it => (it.mode === 'existing' ? it.stockItemId : it.name.trim()) && parseFloat(it.qty) > 0)
+      .map(it => ({
+        name: it.name.trim(),
+        qty: parseFloat(it.qty) || 0,
+        rate: parseFloat(it.rate) || 0,
+        stockItemId: it.mode === 'existing' ? it.stockItemId : undefined,
+        category: it.category,
+        grade: it.grade.trim(),
+        unit: it.unit,
+        quantityUnits: parseFloat(it.quantity) || 0,
+        batchNumber: it.batchNumber.trim(),
+        location: it.location.trim(),
+        notes: it.notes.trim(),
+      }));
     setLedgerSaving(true);
     try {
       const data = { companyId: ledgerCompanyId, type: 'Purchase' as const, date: purchaseDate, items, note: purchaseNote };
@@ -497,49 +561,130 @@ export default function CompaniesPage() {
                 <PlusCircle size={13} /> Add Item
               </button>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-3">
               {purchaseItems.map((it, idx) => (
-                <div key={it.id} className="flex gap-2 items-end bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3">
-                  <div className="flex-1">
-                    <label className="label text-[10px]">Item Name</label>
-                    <input
-                      value={it.name}
-                      onChange={e => updatePurchaseItem(idx, 'name', e.target.value)}
-                      placeholder="e.g. Steel Rod 60 Grade"
-                      className="input py-1.5 text-xs"
-                    />
-                  </div>
-                  <div className="w-20">
-                    <label className="label text-[10px]">Qty</label>
-                    <input
-                      value={it.qty}
-                      onChange={e => updatePurchaseItem(idx, 'qty', e.target.value)}
-                      type="number" min="0" placeholder="0"
-                      className="input py-1.5 text-xs"
-                    />
-                  </div>
-                  <div className="w-28">
-                    <label className="label text-[10px]">Rate (PKR)</label>
-                    <input
-                      value={it.rate}
-                      onChange={e => updatePurchaseItem(idx, 'rate', e.target.value)}
-                      type="number" min="0" placeholder="0"
-                      className="input py-1.5 text-xs"
-                    />
-                  </div>
-                  <div className="w-28">
-                    <label className="label text-[10px]">Amount</label>
-                    <div className="input py-1.5 text-xs bg-gray-100 dark:bg-gray-600 text-gray-600 dark:text-gray-300 font-medium">
-                      {formatCurrency(purchaseItemAmount(it))}
+                <div key={it.id} className="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex rounded-lg overflow-hidden border border-gray-200 dark:border-gray-600">
+                      <button
+                        type="button"
+                        onClick={() => setItemMode(idx, 'existing')}
+                        className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${it.mode === 'existing' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                      >
+                        Existing Stock
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setItemMode(idx, 'new')}
+                        className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${it.mode === 'new' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+                      >
+                        New Item
+                      </button>
                     </div>
+                    {purchaseItems.length > 1 && (
+                      <button
+                        onClick={() => setPurchaseItems(items => items.filter((_, i) => i !== idx))}
+                        className="p-1 text-red-400 hover:text-red-600"
+                      >
+                        <MinusCircle size={16} />
+                      </button>
+                    )}
                   </div>
-                  {purchaseItems.length > 1 && (
-                    <button
-                      onClick={() => setPurchaseItems(items => items.filter((_, i) => i !== idx))}
-                      className="p-1.5 text-red-400 hover:text-red-600 mb-0.5"
-                    >
-                      <MinusCircle size={16} />
-                    </button>
+
+                  {it.mode === 'existing' ? (
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="col-span-3">
+                        <label className="label text-[10px]">Stock Item</label>
+                        <select
+                          value={it.stockItemId}
+                          onChange={e => selectExistingStock(idx, e.target.value)}
+                          className="input py-1.5 text-xs"
+                        >
+                          <option value="">Select stock item</option>
+                          {ledgerCompanyStock.map(s => (
+                            <option key={s.id} value={s.id}>
+                              {s.steelType}{s.grade ? ` ${s.grade}` : ''} — {formatWeight(s.weightKg)} in stock
+                            </option>
+                          ))}
+                        </select>
+                        {ledgerCompanyStock.length === 0 && (
+                          <p className="text-[10px] text-gray-400 mt-1">No stock yet for this company — switch to &ldquo;New Item&rdquo;.</p>
+                        )}
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">Qty to Add ({it.category === 'Cement' ? 'packs' : 'kg'})</label>
+                        <input value={it.qty} onChange={e => updatePurchaseItem(idx, 'qty', e.target.value)} type="number" min="0" placeholder="0" className="input py-1.5 text-xs" />
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">Rate (PKR)</label>
+                        <input value={it.rate} onChange={e => updatePurchaseItem(idx, 'rate', e.target.value)} type="number" min="0" placeholder="0" className="input py-1.5 text-xs" />
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">Amount</label>
+                        <div className="input py-1.5 text-xs bg-gray-100 dark:bg-gray-600 text-gray-600 dark:text-gray-300 font-medium">
+                          {formatCurrency(purchaseItemAmount(it))}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="label text-[10px]">Category</label>
+                        <select value={it.category} onChange={e => updatePurchaseItem(idx, 'category', e.target.value)} className="input py-1.5 text-xs">
+                          <option value="Steel">Steel</option>
+                          <option value="Cement">Cement</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">Type *</label>
+                        <select value={it.name} onChange={e => updatePurchaseItem(idx, 'name', e.target.value)} className="input py-1.5 text-xs">
+                          <option value="">Select type</option>
+                          {(it.category === 'Cement' ? CEMENT_TYPES : STEEL_TYPES).map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">Grade / Spec</label>
+                        <input value={it.grade} onChange={e => updatePurchaseItem(idx, 'grade', e.target.value)} placeholder="Optional" className="input py-1.5 text-xs" />
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">{it.category === 'Cement' ? 'Packs *' : 'Weight (kg) *'}</label>
+                        <input value={it.qty} onChange={e => updatePurchaseItem(idx, 'qty', e.target.value)} type="number" min="0" placeholder="0" className="input py-1.5 text-xs" />
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">Quantity</label>
+                        <div className="flex gap-1">
+                          <input value={it.quantity} onChange={e => updatePurchaseItem(idx, 'quantity', e.target.value)} type="number" min="0" placeholder="0" className="input py-1.5 text-xs flex-1" />
+                          <select value={it.unit} onChange={e => updatePurchaseItem(idx, 'unit', e.target.value)} className="input py-1.5 text-xs w-16">
+                            <option value="piece">pc</option>
+                            <option value="kg">kg</option>
+                            <option value="ton">ton</option>
+                            <option value="pack">pack</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">Rate (PKR) *</label>
+                        <input value={it.rate} onChange={e => updatePurchaseItem(idx, 'rate', e.target.value)} type="number" min="0" placeholder="0" className="input py-1.5 text-xs" />
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">Batch Number</label>
+                        <input value={it.batchNumber} onChange={e => updatePurchaseItem(idx, 'batchNumber', e.target.value)} placeholder="Optional" className="input py-1.5 text-xs" />
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">Location</label>
+                        <input value={it.location} onChange={e => updatePurchaseItem(idx, 'location', e.target.value)} placeholder="Optional" className="input py-1.5 text-xs" />
+                      </div>
+                      <div>
+                        <label className="label text-[10px]">Amount</label>
+                        <div className="input py-1.5 text-xs bg-gray-100 dark:bg-gray-600 text-gray-600 dark:text-gray-300 font-medium">
+                          {formatCurrency(purchaseItemAmount(it))}
+                        </div>
+                      </div>
+                      <div className="col-span-3">
+                        <label className="label text-[10px]">Notes</label>
+                        <input value={it.notes} onChange={e => updatePurchaseItem(idx, 'notes', e.target.value)} placeholder="Optional" className="input py-1.5 text-xs" />
+                      </div>
+                    </div>
                   )}
                 </div>
               ))}

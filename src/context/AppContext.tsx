@@ -1,13 +1,15 @@
 'use client';
 
 import React, {
-  createContext, useContext, useReducer, useEffect, useCallback, useState,
+  createContext, useContext, useReducer, useEffect, useCallback, useState, useRef,
 } from 'react';
 import type {
   AppState, Company, StockItem, ScrapItem, LedgerEntry, Expense, Customer, Invoice, Worker, WorkerB, AttendanceRecord,
 } from '@/lib/types';
-import { getStockStatus } from '@/lib/utils';
+import { getStockStatus, generateObjectId } from '@/lib/utils';
 import { invoiceProfit } from '@/lib/profit';
+import { computeRunningBalances } from '@/lib/ledger';
+import { getQueue, enqueue, flushQueue } from '@/lib/syncQueue';
 
 // ─── Action types ─────────────────────────────────────────────────────────────
 type Action =
@@ -133,24 +135,60 @@ interface LedgerEntryInput {
   type: 'Purchase' | 'Payment';
   date: string;
   note?: string;
-  items?: { name: string; qty: number; rate: number }[];
+  items?: {
+    name: string; qty: number; rate: number;
+    stockItemId?: string; category?: string; grade?: string; unit?: string;
+    quantityUnits?: number; batchNumber?: string; location?: string; notes?: string;
+  }[];
   amount?: number;
   method?: 'Bank Transfer' | 'Cheque' | 'Cash' | 'Other';
   reference?: string;
 }
 
-// ─── API helpers ──────────────────────────────────────────────────────────────
-async function api<T>(url: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
-  if (res.status === 401) {
-    throw new Error('UNAUTHORIZED');
+// ─── API helper (offline-aware) ────────────────────────────────────────────
+// Mutations (non-GET) that supply an `offlineFallback` are queued to
+// localStorage instead of failing when there's no connection — the caller
+// gets back an optimistic value to apply locally right away, and the real
+// request replays (in order) once syncNow()/reconnect flushes the queue.
+// GET requests are untouched: they fail normally, same as before.
+async function api<T>(url: string, opts?: RequestInit, offlineFallback?: () => T): Promise<T> {
+  const method = (opts?.method ?? 'GET').toUpperCase();
+  const isMutation = method !== 'GET';
+
+  const queueAndFallback = (): T => {
+    enqueue({ url, method, body: opts?.body as string | undefined });
+    return offlineFallback!();
+  };
+
+  if (isMutation && offlineFallback) {
+    const knownOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+    // Once anything is queued, keep queuing new mutations behind it so
+    // requests replay in the order they were made.
+    if (knownOffline || getQueue().length > 0) {
+      return queueAndFallback();
+    }
   }
-  if (!res.ok) {
-    let detail = '';
-    try { const j = await res.json(); detail = j.error ?? ''; } catch { /* ignore */ }
-    throw new Error(`API error ${res.status}: ${url}${detail ? ` — ${detail}` : ''}`);
+
+  try {
+    const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    if (res.status === 401) {
+      throw new Error('UNAUTHORIZED');
+    }
+    if (!res.ok) {
+      let detail = '';
+      try { const j = await res.json(); detail = j.error ?? ''; } catch { /* ignore */ }
+      throw new Error(`API error ${res.status}: ${url}${detail ? ` — ${detail}` : ''}`);
+    }
+    return res.json();
+  } catch (err) {
+    // A real fetch/network failure surfaces as a TypeError — anything else
+    // (UNAUTHORIZED, a parsed API error) is a genuine response and should
+    // reject normally rather than being queued forever.
+    if (isMutation && offlineFallback && err instanceof TypeError) {
+      return queueAndFallback();
+    }
+    throw err;
   }
-  return res.json();
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -159,6 +197,9 @@ interface AppContextType {
   loading: boolean;
   error: string | null;
   dispatch: React.Dispatch<Action>;
+  pendingCount: number;
+  syncStatus: 'saved' | 'pending' | 'syncing';
+  syncNow: () => Promise<void>;
   addCompany: (data: Omit<Company, 'id' | 'createdAt' | 'totalPurchased' | 'totalCost'>) => Promise<Company>;
   updateCompany: (c: Company) => Promise<void>;
   deleteCompany: (id: string) => Promise<void>;
@@ -199,6 +240,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const isLoginPage = typeof window !== 'undefined' && window.location.pathname.startsWith('/login');
   const [loading, setLoading] = useState(!isLoginPage);
   const [error, setError] = useState<string | null>(null);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [syncStatus, setSyncStatus] = useState<'saved' | 'pending' | 'syncing'>('saved');
+  const syncingRef = useRef(false);
+
+  // ── Full reload: fetch every collection and replace local state ───────────
+  // Used on mount, and again after a successful sync so anything only
+  // approximated locally while offline (ledger balances, company/customer
+  // totals, stock status, real invoice numbers) gets the true server values.
+  const reloadAll = useCallback(async () => {
+    const [companies, stockItems, scrapItems, ledgerEntries, expenses, customers, invoices, workers, workerBs, attendance] =
+      await Promise.all([
+        api<Company[]>('/api/companies').then(normAll),
+        api<StockItem[]>('/api/stock').then(normAll),
+        api<ScrapItem[]>('/api/scrap').then(normAll),
+        api<LedgerEntry[]>('/api/ledger').then(normAll),
+        api<Expense[]>('/api/expenses').then(normAll),
+        api<Customer[]>('/api/customers').then(normAll),
+        api<Invoice[]>('/api/invoices').then(normAll),
+        api<Worker[]>('/api/workers').then(normAll),
+        api<WorkerB[]>('/api/worker-b').then(normAll),
+        api<AttendanceRecord[]>('/api/attendance').then(normAll),
+      ]);
+    dispatch({
+      type: 'SET_DATA',
+      payload: { companies, stockItems, scrapItems, ledgerEntries, expenses, customers, invoices, workers, workerBs, attendance },
+    });
+  }, []);
 
   // ── Load all data on mount ─────────────────────────────────────────────────
   useEffect(() => {
@@ -207,26 +275,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       return;
     }
-    async function load() {
+    (async () => {
       try {
         setLoading(true);
-        const [companies, stockItems, scrapItems, ledgerEntries, expenses, customers, invoices, workers, workerBs, attendance] =
-          await Promise.all([
-            api<Company[]>('/api/companies').then(normAll),
-            api<StockItem[]>('/api/stock').then(normAll),
-            api<ScrapItem[]>('/api/scrap').then(normAll),
-            api<LedgerEntry[]>('/api/ledger').then(normAll),
-            api<Expense[]>('/api/expenses').then(normAll),
-            api<Customer[]>('/api/customers').then(normAll),
-            api<Invoice[]>('/api/invoices').then(normAll),
-            api<Worker[]>('/api/workers').then(normAll),
-            api<WorkerB[]>('/api/worker-b').then(normAll),
-            api<AttendanceRecord[]>('/api/attendance').then(normAll),
-          ]);
-        dispatch({
-          type: 'SET_DATA',
-          payload: { companies, stockItems, scrapItems, ledgerEntries, expenses, customers, invoices, workers, workerBs, attendance },
-        });
+        await reloadAll();
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : 'Failed to load data from database';
         if (msg === 'UNAUTHORIZED') {
@@ -238,9 +290,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       } finally {
         setLoading(false);
       }
-    }
-    load();
-  }, []);
+    })();
+  }, [reloadAll]);
 
   // ── Persist dark mode ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -255,63 +306,118 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     document.documentElement.classList.toggle('dark', state.darkMode);
   }, [state.darkMode]);
 
+  // ── Offline sync ────────────────────────────────────────────────────────
+  const refreshPendingCount = useCallback(() => {
+    const n = getQueue().length;
+    setPendingCount(n);
+    setSyncStatus(n > 0 ? 'pending' : 'saved');
+  }, []);
+
+  const syncNow = useCallback(async () => {
+    if (syncingRef.current) return;
+    if (getQueue().length === 0) { refreshPendingCount(); return; }
+    syncingRef.current = true;
+    setSyncStatus('syncing');
+    try {
+      const { success } = await flushQueue();
+      if (success) {
+        try { await reloadAll(); } catch { /* will retry on the next successful sync */ }
+      }
+    } finally {
+      syncingRef.current = false;
+      refreshPendingCount();
+    }
+  }, [reloadAll, refreshPendingCount]);
+
+  useEffect(() => {
+    refreshPendingCount();
+    const handleOnline = () => { syncNow(); };
+    const handleOffline = () => { refreshPendingCount(); };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    if (navigator.onLine) syncNow(); // catch up on a queue left over from a previous session
+    // Safety net in case the browser's `online` event doesn't fire reliably
+    const retryTimer = setInterval(() => {
+      if (navigator.onLine && getQueue().length > 0) syncNow();
+    }, 30000);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      clearInterval(retryTimer);
+    };
+  }, [syncNow, refreshPendingCount]);
+
   // ── CRUD helpers ───────────────────────────────────────────────────────────
   const addCompany = useCallback(async (
     data: Omit<Company, 'id' | 'createdAt' | 'totalPurchased' | 'totalCost'>
   ) => {
-    const c = norm(await api<Company>('/api/companies', { method: 'POST', body: JSON.stringify(data) }));
+    const payload = { ...data, _id: generateObjectId() };
+    const c = norm(await api<Company>('/api/companies', { method: 'POST', body: JSON.stringify(payload) },
+      () => ({ ...payload, createdAt: new Date().toISOString(), totalPurchased: 0, totalCost: 0 } as unknown as Company)));
     dispatch({ type: 'ADD_COMPANY', payload: c });
     return c;
   }, []);
 
   const updateCompany = useCallback(async (c: Company) => {
-    const updated = norm(await api<Company>(`/api/companies/${c.id}`, { method: 'PUT', body: JSON.stringify(c) }));
+    const updated = norm(await api<Company>(`/api/companies/${c.id}`, { method: 'PUT', body: JSON.stringify(c) }, () => c));
     dispatch({ type: 'UPDATE_COMPANY', payload: updated });
   }, []);
 
   const deleteCompany = useCallback(async (id: string) => {
-    await api(`/api/companies/${id}`, { method: 'DELETE' });
+    await api(`/api/companies/${id}`, { method: 'DELETE' }, () => undefined);
     dispatch({ type: 'DELETE_COMPANY', payload: id });
   }, []);
 
   const addStock = useCallback(async (data: Omit<StockItem, 'id' | 'status'>) => {
-    const payload = { ...data, status: getStockStatus(data.weightKg, data.category) };
-    const s = norm(await api<StockItem>('/api/stock', { method: 'POST', body: JSON.stringify(payload) }));
+    const payload = { ...data, _id: generateObjectId(), status: getStockStatus(data.weightKg, data.category) };
+    const s = norm(await api<StockItem>('/api/stock', { method: 'POST', body: JSON.stringify(payload) }, () => payload as unknown as StockItem));
     dispatch({ type: 'ADD_STOCK', payload: s });
   }, []);
 
   const updateStock = useCallback(async (s: StockItem) => {
     const payload = { ...s, status: getStockStatus(s.weightKg, s.category) };
-    const updated = norm(await api<StockItem>(`/api/stock/${s.id}`, { method: 'PUT', body: JSON.stringify(payload) }));
+    const updated = norm(await api<StockItem>(`/api/stock/${s.id}`, { method: 'PUT', body: JSON.stringify(payload) }, () => payload));
     dispatch({ type: 'UPDATE_STOCK', payload: updated });
   }, []);
 
   const deleteStock = useCallback(async (id: string) => {
-    await api(`/api/stock/${id}`, { method: 'DELETE' });
+    await api(`/api/stock/${id}`, { method: 'DELETE' }, () => undefined);
     dispatch({ type: 'DELETE_STOCK', payload: id });
   }, []);
 
   const addScrap = useCallback(async (
     data: { stockItemId: string; weightKg: number; notes?: string; date?: string }
   ) => {
-    const s = norm(await api<ScrapItem>('/api/scrap', { method: 'POST', body: JSON.stringify(data) }));
+    const payload = { ...data, _id: generateObjectId() };
+    const source = state.stockItems.find(si => si.id === data.stockItemId);
+    const s = norm(await api<ScrapItem>('/api/scrap', { method: 'POST', body: JSON.stringify(payload) }, () => ({
+      ...payload,
+      category: source?.category ?? 'Steel',
+      steelType: source?.steelType ?? '',
+      grade: source?.grade ?? '',
+      unit: source?.unit ?? 'piece',
+      pricePerKg: source?.pricePerKg ?? 0,
+      companyName: source?.companyName ?? '',
+      batchNumber: source?.batchNumber ?? '',
+      date: data.date ?? new Date().toISOString().split('T')[0],
+    } as unknown as ScrapItem)));
     dispatch({ type: 'ADD_SCRAP', payload: s });
     // Refresh stock so the deducted batch shows its new remaining quantity
     try {
       const freshStock = await api<StockItem[]>('/api/stock');
       dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock) } });
     } catch { /* non-critical */ }
-  }, []);
+  }, [state.stockItems]);
 
   // Permanent delete — the scrap record is removed, stock is untouched
   const deleteScrap = useCallback(async (id: string) => {
-    await api(`/api/scrap/${id}`, { method: 'DELETE' });
+    await api(`/api/scrap/${id}`, { method: 'DELETE' }, () => undefined);
     dispatch({ type: 'DELETE_SCRAP', payload: id });
   }, []);
 
   // Restore — puts the quantity back into its stock batch, then removes the scrap record
   const restoreScrap = useCallback(async (id: string) => {
-    await api(`/api/scrap/${id}/restore`, { method: 'POST' });
+    await api(`/api/scrap/${id}/restore`, { method: 'POST' }, () => undefined);
     dispatch({ type: 'DELETE_SCRAP', payload: id });
     try {
       const freshStock = await api<StockItem[]>('/api/stock');
@@ -327,9 +433,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SET_LEDGER_FOR_COMPANY', payload: { companyId, entries: fresh } });
   }, []);
 
+  // Offline fallback for the ledger: approximates running balances locally
+  // (using the same math the server uses) so the entry list stays usable
+  // until the queued write syncs and refreshLedgerForCompany gets the real thing.
+  const applyLedgerOptimistically = useCallback((companyId: string, entries: LedgerEntry[]) => {
+    const withBalances = computeRunningBalances(entries);
+    dispatch({ type: 'SET_LEDGER_FOR_COMPANY', payload: { companyId, entries: withBalances } });
+  }, []);
+
   const addLedgerEntry = useCallback(async (data: LedgerEntryInput) => {
-    await api('/api/ledger', { method: 'POST', body: JSON.stringify(data) });
-    await refreshLedgerForCompany(data.companyId);
+    const payload = { ...data, _id: generateObjectId() };
+    const amount = data.type === 'Purchase'
+      ? (data.items ?? []).reduce((s, it) => s + it.qty * it.rate, 0)
+      : (data.amount ?? 0);
+    const optimisticEntry = norm({ ...payload, amount, createdAt: new Date().toISOString() }) as unknown as LedgerEntry;
+    await api('/api/ledger', { method: 'POST', body: JSON.stringify(payload) }, () => optimisticEntry);
+    try {
+      await refreshLedgerForCompany(data.companyId);
+    } catch {
+      const others = state.ledgerEntries.filter(e => e.companyId === data.companyId);
+      applyLedgerOptimistically(data.companyId, [...others, optimisticEntry]);
+    }
     if (data.type === 'Purchase') {
       // A matching stock item may have been bumped server-side
       try {
@@ -337,54 +461,87 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock) } });
       } catch { /* non-critical */ }
     }
-  }, [refreshLedgerForCompany]);
+  }, [refreshLedgerForCompany, applyLedgerOptimistically, state.ledgerEntries]);
 
   const updateLedgerEntry = useCallback(async (id: string, data: LedgerEntryInput) => {
-    await api(`/api/ledger/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-    await refreshLedgerForCompany(data.companyId);
-  }, [refreshLedgerForCompany]);
+    const amount = data.type === 'Purchase'
+      ? (data.items ?? []).reduce((s, it) => s + it.qty * it.rate, 0)
+      : (data.amount ?? 0);
+    const existing = state.ledgerEntries.find(e => e.id === id);
+    const optimisticEntry = { ...(existing ?? {} as LedgerEntry), ...data, id, amount } as LedgerEntry;
+    await api(`/api/ledger/${id}`, { method: 'PUT', body: JSON.stringify(data) }, () => optimisticEntry);
+    try {
+      await refreshLedgerForCompany(data.companyId);
+    } catch {
+      const others = state.ledgerEntries.filter(e => e.companyId === data.companyId && e.id !== id);
+      applyLedgerOptimistically(data.companyId, [...others, optimisticEntry]);
+    }
+    // Purchase edits may have adjusted stock (old effect reversed, new effect applied)
+    try {
+      const freshStock = await api<StockItem[]>('/api/stock');
+      dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock) } });
+    } catch { /* non-critical */ }
+  }, [refreshLedgerForCompany, applyLedgerOptimistically, state.ledgerEntries]);
 
   const deleteLedgerEntry = useCallback(async (id: string, companyId: string) => {
-    await api(`/api/ledger/${id}`, { method: 'DELETE' });
-    await refreshLedgerForCompany(companyId);
-  }, [refreshLedgerForCompany]);
+    await api(`/api/ledger/${id}`, { method: 'DELETE' }, () => undefined);
+    try {
+      await refreshLedgerForCompany(companyId);
+    } catch {
+      const remaining = state.ledgerEntries.filter(e => e.companyId === companyId && e.id !== id);
+      applyLedgerOptimistically(companyId, remaining);
+    }
+    // Deleting a Purchase reverses its stock effect server-side
+    try {
+      const freshStock = await api<StockItem[]>('/api/stock');
+      dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock) } });
+    } catch { /* non-critical */ }
+  }, [refreshLedgerForCompany, applyLedgerOptimistically, state.ledgerEntries]);
 
   // ── Expenses ────────────────────────────────────────────────────────────
   const addExpense = useCallback(async (data: Omit<Expense, 'id' | 'createdAt'>) => {
-    const e = norm(await api<Expense>('/api/expenses', { method: 'POST', body: JSON.stringify(data) }));
+    const payload = { ...data, _id: generateObjectId() };
+    const e = norm(await api<Expense>('/api/expenses', { method: 'POST', body: JSON.stringify(payload) },
+      () => ({ ...payload, createdAt: new Date().toISOString() } as unknown as Expense)));
     dispatch({ type: 'ADD_EXPENSE', payload: e });
   }, []);
 
   const updateExpense = useCallback(async (e: Expense) => {
-    const updated = norm(await api<Expense>(`/api/expenses/${e.id}`, { method: 'PUT', body: JSON.stringify(e) }));
+    const updated = norm(await api<Expense>(`/api/expenses/${e.id}`, { method: 'PUT', body: JSON.stringify(e) }, () => e));
     dispatch({ type: 'UPDATE_EXPENSE', payload: updated });
   }, []);
 
   const deleteExpense = useCallback(async (id: string) => {
-    await api(`/api/expenses/${id}`, { method: 'DELETE' });
+    await api(`/api/expenses/${id}`, { method: 'DELETE' }, () => undefined);
     dispatch({ type: 'DELETE_EXPENSE', payload: id });
   }, []);
 
   const addCustomer = useCallback(async (
     data: Omit<Customer, 'id' | 'createdAt' | 'totalPurchases' | 'totalSpent' | 'pendingBalance'>
   ) => {
-    const c = norm(await api<Customer>('/api/customers', { method: 'POST', body: JSON.stringify(data) }));
+    const payload = { ...data, _id: generateObjectId() };
+    const c = norm(await api<Customer>('/api/customers', { method: 'POST', body: JSON.stringify(payload) },
+      () => ({ ...payload, createdAt: new Date().toISOString(), totalPurchases: 0, totalSpent: 0, pendingBalance: 0 } as unknown as Customer)));
     dispatch({ type: 'ADD_CUSTOMER', payload: c });
     return c;
   }, []);
 
   const updateCustomer = useCallback(async (c: Customer) => {
-    const updated = norm(await api<Customer>(`/api/customers/${c.id}`, { method: 'PUT', body: JSON.stringify(c) }));
+    const updated = norm(await api<Customer>(`/api/customers/${c.id}`, { method: 'PUT', body: JSON.stringify(c) }, () => c));
     dispatch({ type: 'UPDATE_CUSTOMER', payload: updated });
   }, []);
 
   const deleteCustomer = useCallback(async (id: string) => {
-    await api(`/api/customers/${id}`, { method: 'DELETE' });
+    await api(`/api/customers/${id}`, { method: 'DELETE' }, () => undefined);
     dispatch({ type: 'DELETE_CUSTOMER', payload: id });
   }, []);
 
   const addInvoice = useCallback(async (data: Omit<Invoice, 'id' | 'invoiceNumber'>) => {
-    const i = norm(await api<Invoice>('/api/invoices', { method: 'POST', body: JSON.stringify(data) }));
+    const payload = { ...data, _id: generateObjectId() };
+    const i = norm(await api<Invoice>('/api/invoices', { method: 'POST', body: JSON.stringify(payload) },
+      // Real invoice numbers are assigned sequentially server-side — this
+      // placeholder is replaced once the queued write syncs and reloadAll() runs.
+      () => ({ ...payload, invoiceNumber: 'Pending…', createdAt: new Date().toISOString().split('T')[0] } as unknown as Invoice)));
     dispatch({ type: 'ADD_INVOICE', payload: i });
     // Refresh customer totals, stock, and workerB earnings after invoice
     try {
@@ -399,7 +556,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const updateInvoice = useCallback(async (i: Invoice) => {
-    const updated = norm(await api<Invoice>(`/api/invoices/${i.id}`, { method: 'PUT', body: JSON.stringify(i) }));
+    const updated = norm(await api<Invoice>(`/api/invoices/${i.id}`, { method: 'PUT', body: JSON.stringify(i) }, () => i));
     dispatch({ type: 'UPDATE_INVOICE', payload: updated });
     try {
       const freshStock = await api<StockItem[]>('/api/stock');
@@ -408,7 +565,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const deleteInvoice = useCallback(async (id: string) => {
-    await api(`/api/invoices/${id}`, { method: 'DELETE' });
+    await api(`/api/invoices/${id}`, { method: 'DELETE' }, () => undefined);
     dispatch({ type: 'DELETE_INVOICE', payload: id });
     try {
       const freshStock = await api<StockItem[]>('/api/stock');
@@ -417,34 +574,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addWorker = useCallback(async (data: Omit<Worker, 'id'>) => {
-    const w = norm(await api<Worker>('/api/workers', { method: 'POST', body: JSON.stringify(data) }));
+    const payload = { ...data, _id: generateObjectId() };
+    const w = norm(await api<Worker>('/api/workers', { method: 'POST', body: JSON.stringify(payload) }, () => payload as unknown as Worker));
     dispatch({ type: 'ADD_WORKER', payload: w });
   }, []);
 
   const updateWorker = useCallback(async (w: Worker) => {
-    const updated = norm(await api<Worker>(`/api/workers/${w.id}`, { method: 'PUT', body: JSON.stringify(w) }));
+    const updated = norm(await api<Worker>(`/api/workers/${w.id}`, { method: 'PUT', body: JSON.stringify(w) }, () => w));
     dispatch({ type: 'UPDATE_WORKER', payload: updated });
   }, []);
 
   const deleteWorker = useCallback(async (id: string) => {
-    await api(`/api/workers/${id}`, { method: 'DELETE' });
+    await api(`/api/workers/${id}`, { method: 'DELETE' }, () => undefined);
     dispatch({ type: 'DELETE_WORKER', payload: id });
   }, []);
 
   const addWorkerB = useCallback(async (
     data: Omit<WorkerB, 'id' | 'createdAt' | 'totalEarnings' | 'totalPaid' | 'totalDeals'>
   ) => {
-    const w = norm(await api<WorkerB>('/api/worker-b', { method: 'POST', body: JSON.stringify(data) }));
+    const payload = { ...data, _id: generateObjectId() };
+    const w = norm(await api<WorkerB>('/api/worker-b', { method: 'POST', body: JSON.stringify(payload) },
+      () => ({ ...payload, createdAt: new Date().toISOString(), totalEarnings: 0, totalPaid: 0, totalDeals: 0 } as unknown as WorkerB)));
     dispatch({ type: 'ADD_WORKER_B', payload: w });
   }, []);
 
   const updateWorkerB = useCallback(async (w: WorkerB) => {
-    const updated = norm(await api<WorkerB>(`/api/worker-b/${w.id}`, { method: 'PUT', body: JSON.stringify(w) }));
+    const updated = norm(await api<WorkerB>(`/api/worker-b/${w.id}`, { method: 'PUT', body: JSON.stringify(w) }, () => w));
     dispatch({ type: 'UPDATE_WORKER_B', payload: updated });
   }, []);
 
   const deleteWorkerB = useCallback(async (id: string) => {
-    await api(`/api/worker-b/${id}`, { method: 'DELETE' });
+    await api(`/api/worker-b/${id}`, { method: 'DELETE' }, () => undefined);
     dispatch({ type: 'DELETE_WORKER_B', payload: id });
   }, []);
 
@@ -454,7 +614,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setAttendance = useCallback(async (record: Omit<AttendanceRecord, 'id'>) => {
-    const saved = norm(await api<AttendanceRecord>('/api/attendance', { method: 'POST', body: JSON.stringify(record) }));
+    const payload = { ...record, _id: generateObjectId() };
+    const saved = norm(await api<AttendanceRecord>('/api/attendance', { method: 'POST', body: JSON.stringify(payload) }, () => payload as unknown as AttendanceRecord));
     dispatch({ type: 'SET_ATTENDANCE', payload: saved });
   }, []);
 
@@ -503,6 +664,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   return (
     <AppContext.Provider value={{
       state, loading, error, dispatch,
+      pendingCount, syncStatus, syncNow,
       addCompany, updateCompany, deleteCompany,
       addStock, updateStock, deleteStock,
       addScrap, deleteScrap, restoreScrap,

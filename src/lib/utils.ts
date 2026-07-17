@@ -39,6 +39,16 @@ export function generateId(prefix = 'id'): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+// A 24-hex-char string shaped like a MongoDB ObjectId, generated client-side.
+// Mongoose auto-casts any valid 24-hex string to an ObjectId on save, so
+// records created offline get a real, stable, final _id from the moment
+// they're created — no server-assigned-ID reconciliation needed once synced.
+export function generateObjectId(): string {
+  const timestamp = Math.floor(Date.now() / 1000).toString(16).padStart(8, '0');
+  const random = Array.from({ length: 16 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+  return (timestamp + random).slice(0, 24);
+}
+
 export function generateInvoiceNumber(existingInvoices: { invoiceNumber: string }[]): string {
   const year = new Date().getFullYear();
   const nums = existingInvoices
