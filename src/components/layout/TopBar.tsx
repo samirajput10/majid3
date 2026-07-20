@@ -7,7 +7,7 @@ import { useApp } from '@/context/AppContext';
 import { matchPhone } from '@/lib/utils';
 
 export default function TopBar() {
-  const { state, dispatch, syncStatus, pendingCount, syncNow } = useApp();
+  const { state, dispatch, syncStatus, pendingCount, syncNow, refreshing, refreshNow } = useApp();
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<{ type: string; label: string; sub: string; href: string }[]>([]);
@@ -144,6 +144,23 @@ export default function TopBar() {
           <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
             M
           </div>
+          <button
+            onClick={() => {
+              // A cloud pull mirrors over local data — if there are unsynced
+              // local changes, make sure the user really wants to lose them.
+              if (syncStatus === 'pending' &&
+                  !window.confirm('You have unsynced changes. Refresh will fetch the latest data from the cloud and may overwrite them.\n\nClick Cancel and press Save first to keep your changes, or OK to refresh anyway.')) {
+                return;
+              }
+              refreshNow();
+            }}
+            disabled={refreshing || syncStatus === 'syncing'}
+            title="Refresh — fetch the latest data from the database"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:cursor-default focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700"
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+            <span className="hidden sm:inline">{refreshing ? 'Refreshing…' : 'Refresh'}</span>
+          </button>
           <button
             onClick={() => syncNow()}
             disabled={syncStatus === 'syncing'}

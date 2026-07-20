@@ -3,7 +3,7 @@
 import { useState, useMemo } from 'react';
 import {
   Plus, Search, Building2, Edit2, Trash2, BarChart2,
-  Wallet, ShoppingCart, Banknote, PlusCircle, MinusCircle,
+  Wallet, ShoppingCart, Banknote, PlusCircle, MinusCircle, Printer,
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import Modal from '@/components/ui/Modal';
@@ -11,8 +11,8 @@ import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import EmptyState from '@/components/ui/EmptyState';
 import StatCard from '@/components/ui/StatCard';
 import Badge from '@/components/ui/Badge';
-import { formatCurrency, formatCurrencyFull, formatWeight, formatDate, generateId, todayISO } from '@/lib/utils';
-import type { Company, LedgerEntry, PaymentMethod } from '@/lib/types';
+import { formatCurrency, formatCurrencyFull, formatWeight, formatDate, generateId, todayISO, numberToWords } from '@/lib/utils';
+import type { Company, LedgerEntry, LedgerExtraCharge, PaymentMethod } from '@/lib/types';
 import { getLedgerSummary, getBalanceLabel } from '@/lib/ledger';
 import { STEEL_TYPES, CEMENT_TYPES } from '@/lib/constants';
 import {
@@ -61,6 +61,14 @@ export default function CompaniesPage() {
   const [purchaseItems, setPurchaseItems] = useState([newLedgerItem()]);
   const [purchaseDate, setPurchaseDate] = useState(todayISO());
   const [purchaseNote, setPurchaseNote] = useState('');
+  const [purchaseExtraCharges, setPurchaseExtraCharges] = useState<LedgerExtraCharge[]>([]);
+  const [purchaseDiscount, setPurchaseDiscount] = useState('0');
+  const [purchaseDiscountType, setPurchaseDiscountType] = useState<'flat' | 'percent'>('flat');
+  const [purchaseAmountPaid, setPurchaseAmountPaid] = useState('');
+  const [purchaseVehicle, setPurchaseVehicle] = useState('');
+  const [purchaseDueDate, setPurchaseDueDate] = useState('');
+  const [purchaseWorkerBId, setPurchaseWorkerBId] = useState('');
+  const [purchaseWorkerBCharge, setPurchaseWorkerBCharge] = useState('');
 
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Cash');
@@ -177,11 +185,27 @@ export default function CompaniesPage() {
       })));
       setPurchaseDate(entry.date);
       setPurchaseNote(entry.note ?? '');
+      setPurchaseExtraCharges((entry.extraCharges ?? []).map(c => ({ id: c.id || generateId('ec'), description: c.description, amount: c.amount })));
+      setPurchaseDiscount(String(entry.discount ?? 0));
+      setPurchaseDiscountType(entry.discountType ?? 'flat');
+      setPurchaseAmountPaid(entry.amountPaid ? String(entry.amountPaid) : '');
+      setPurchaseVehicle(entry.vehicleNumber ?? '');
+      setPurchaseDueDate(entry.dueDate ?? '');
+      setPurchaseWorkerBId(entry.workerBId ?? '');
+      setPurchaseWorkerBCharge(entry.workerBCharge ? String(entry.workerBCharge) : '');
     } else {
       setEditingEntry(null);
       setPurchaseItems([newLedgerItem()]);
       setPurchaseDate(todayISO());
       setPurchaseNote('');
+      setPurchaseExtraCharges([]);
+      setPurchaseDiscount('0');
+      setPurchaseDiscountType('flat');
+      setPurchaseAmountPaid('');
+      setPurchaseVehicle('');
+      setPurchaseDueDate('');
+      setPurchaseWorkerBId('');
+      setPurchaseWorkerBCharge('');
     }
     setEntryFormType('Purchase');
   };
@@ -224,7 +248,19 @@ export default function CompaniesPage() {
     } : it));
   };
   const purchaseItemAmount = (it: { qty: string; rate: string }) => (parseFloat(it.qty) || 0) * (parseFloat(it.rate) || 0);
-  const purchaseTotal = purchaseItems.reduce((s, it) => s + purchaseItemAmount(it), 0);
+  const purchaseItemsTotal = purchaseItems.reduce((s, it) => s + purchaseItemAmount(it), 0);
+  // Same money rules as the customer invoice form: extra charges fold into
+  // the subtotal before discount; status derives from balance.
+  const purchaseExtraTotal = purchaseExtraCharges.reduce((s, c) => s + (c.amount || 0), 0);
+  const purchaseSubtotal = purchaseItemsTotal + purchaseExtraTotal;
+  const purchaseDiscountAmt = purchaseDiscountType === 'percent'
+    ? purchaseSubtotal * (parseFloat(purchaseDiscount || '0') / 100)
+    : parseFloat(purchaseDiscount || '0');
+  const purchaseTotal = Math.max(0, purchaseSubtotal - purchaseDiscountAmt);
+  const purchasePaid = parseFloat(purchaseAmountPaid || '0');
+  const purchaseBalance = Math.max(0, purchaseTotal - purchasePaid);
+  const purchaseStatus: 'Paid' | 'Pending' | 'Partial' =
+    purchaseBalance === 0 ? 'Paid' : purchasePaid > 0 ? 'Partial' : 'Pending';
   const purchaseValid = purchaseItems.some(it =>
     (it.mode === 'existing' ? !!it.stockItemId : it.name.trim()) && parseFloat(it.qty) > 0
   );
@@ -248,7 +284,25 @@ export default function CompaniesPage() {
       }));
     setLedgerSaving(true);
     try {
-      const data = { companyId: ledgerCompanyId, type: 'Purchase' as const, date: purchaseDate, items, note: purchaseNote };
+      const workerB = purchaseWorkerBId ? state.workerBs.find(w => w.id === purchaseWorkerBId) : undefined;
+      const data = {
+        companyId: ledgerCompanyId, type: 'Purchase' as const, date: purchaseDate, items, note: purchaseNote,
+        extraCharges: purchaseExtraCharges
+          .filter(c => c.description.trim())
+          .map(c => ({ description: c.description.trim(), amount: c.amount || 0 })),
+        discount: parseFloat(purchaseDiscount || '0'),
+        discountType: purchaseDiscountType,
+        subtotal: purchaseSubtotal,
+        amount: purchaseTotal,
+        amountPaid: purchasePaid,
+        balance: purchaseBalance,
+        status: purchaseStatus,
+        vehicleNumber: purchaseVehicle.trim(),
+        dueDate: purchaseDueDate,
+        workerBId: workerB?.id ?? '',
+        workerBName: workerB?.name ?? '',
+        workerBCharge: workerB ? (parseFloat(purchaseWorkerBCharge) || 0) : 0,
+      };
       if (editingEntry) await updateLedgerEntry(editingEntry.id, data);
       else await addLedgerEntry(data);
       closeEntryForm();
@@ -278,6 +332,262 @@ export default function CompaniesPage() {
     if (!deleteEntryId || !ledgerCompanyId) return;
     await deleteLedgerEntry(deleteEntryId, ledgerCompanyId);
     setDeleteEntryId(null);
+  };
+
+  // ── Printable ledger statement — the whole account: purchases, payments,
+  // running balance. Same standalone print-window approach as the bills. ────
+  const handlePrintLedger = () => {
+    if (!ledgerCompany || companyLedger.length === 0) return;
+
+    const esc = (s: string | number | undefined | null) =>
+      String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const money = (a: number) => a.toLocaleString('en-PK');
+
+    // Statement reads oldest-first, matching how the running balance builds up
+    const entries = [...companyLedger].sort((a, b) => {
+      if (a.date !== b.date) return a.date.localeCompare(b.date);
+      return a.createdAt.localeCompare(b.createdAt);
+    });
+
+    const rows = entries.map(e => {
+      const isPurchase = e.type === 'Purchase';
+      const details = isPurchase
+        ? `${esc(e.invoiceNumber || 'Purchase')}${(e.items ?? []).length
+            ? ' — ' + (e.items ?? []).map(i => `${esc(i.name)} (${i.qty} ${i.category === 'Cement' ? 'packs' : 'kg'})`).join(', ')
+            : ''}`
+        : `Payment — ${esc(e.method ?? '')}${e.reference ? ` · ${esc(e.reference)}` : ''}`;
+      const note = e.note ? `<div class="note">${esc(e.note)}</div>` : '';
+      const debit = isPurchase ? money(e.amount) : '';
+      const credit = isPurchase
+        ? ((e.amountPaid ?? 0) > 0 ? money(e.amountPaid ?? 0) : '')
+        : money(e.amount);
+      return `<tr>
+        <td>${esc(formatDate(e.date))}</td>
+        <td>${details}${note}</td>
+        <td class="r">${debit}</td>
+        <td class="r">${credit}</td>
+        <td class="r">${money(Math.abs(e.balanceAfter))} ${getBalanceLabel(e.balanceAfter)}</td>
+      </tr>`;
+    }).join('');
+
+    const s = ledgerSummary;
+    const printedOn = formatDate(todayISO());
+
+    const win = window.open('', '_blank');
+    if (!win) return;
+    win.document.write(`<!DOCTYPE html><html><head><title>Ledger — ${esc(ledgerCompany.name)}</title>
+      <style>
+        * { box-sizing: border-box; }
+        body { font-family: Arial, Helvetica, sans-serif; color: #000; margin: 0; padding: 24px; font-size: 12px; }
+        .sheet { max-width: 800px; margin: 0 auto; }
+        .title { text-align: center; }
+        .title span { display: inline-block; border: 1.5px solid #000; padding: 4px 28px; font-size: 16px; font-weight: bold; letter-spacing: 1px; }
+        .head { display: flex; justify-content: space-between; margin-top: 14px; gap: 24px; }
+        .head .col { flex: 1; }
+        .row { display: flex; align-items: baseline; margin-bottom: 4px; }
+        .row .lbl { font-weight: bold; white-space: nowrap; margin-right: 6px; }
+        .row .val { flex: 1; border-bottom: 1px solid #000; min-height: 15px; padding: 0 4px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+        th, td { border: 1px solid #000; padding: 5px 8px; font-size: 12px; }
+        th { background: #f0f0f0; text-align: left; }
+        td.r, th.r { text-align: right; white-space: nowrap; }
+        .note { font-size: 10px; color: #444; font-style: italic; }
+        .totals { width: 320px; margin-left: auto; margin-top: 14px; }
+        .totals table { margin: 0; }
+        .totals td { padding: 4px 8px; }
+        .totals td.k { font-weight: bold; border: 1px solid #000; }
+        .totals td.v { text-align: right; border: 1px solid #000; }
+        .sign { display: flex; justify-content: space-between; margin-top: 48px; }
+        .sign .line { border-top: 1px solid #000; padding-top: 4px; width: 200px; text-align: center; font-weight: bold; }
+        @media print { @page { margin: 12mm; } body { padding: 0; } }
+      </style></head><body>
+      <div class="sheet">
+        <div class="title"><span>ACCOUNT LEDGER</span></div>
+        <div class="head">
+          <div class="col">
+            <div class="row"><span class="lbl">Supplier:</span><span class="val">${esc(ledgerCompany.name)}</span></div>
+            <div class="row"><span class="lbl">Contact:</span><span class="val">${esc(ledgerCompany.contactPerson || '')}</span></div>
+            <div class="row"><span class="lbl">Address:</span><span class="val">${esc(ledgerCompany.address || '')}</span></div>
+          </div>
+          <div class="col">
+            <div class="row"><span class="lbl">Phone:</span><span class="val">${esc(ledgerCompany.phone || '')}</span></div>
+            <div class="row"><span class="lbl">Printed:</span><span class="val">${esc(printedOn)}</span></div>
+            <div class="row"><span class="lbl">Entries:</span><span class="val">${entries.length}</span></div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width:90px;">Date</th>
+              <th>Details</th>
+              <th class="r">Purchase</th>
+              <th class="r">Paid</th>
+              <th class="r">Balance</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="totals">
+          <table>
+            <tr><td class="k">Total Purchases</td><td class="v">${money(s.totalPurchases)}</td></tr>
+            <tr><td class="k">Total Payments</td><td class="v">${money(s.totalPayments)}</td></tr>
+            <tr><td class="k">Current Balance</td><td class="v">${money(s.balance)} ${esc(s.label)}</td></tr>
+          </table>
+        </div>
+        <div class="sign">
+          <div class="line">Signature</div>
+        </div>
+      </div>
+      <script>window.onload = function(){ window.print(); }<\/script>
+      </body></html>`);
+    win.document.close();
+  };
+
+  // ── Printable purchase bill — supplier twin of the sales invoice print ────
+  const handlePrintPurchase = () => {
+    const entry = detailEntry;
+    if (!entry || entry.type !== 'Purchase' || !ledgerCompany) return;
+
+    const esc = (s: string | number | undefined | null) =>
+      String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const money = (a: number) => a.toLocaleString('en-PK');
+
+    // Labour charge is folded into the charges list on the slip.
+    const labourCharge = entry.workerBCharge || 0;
+    const charges: { description: string; amount: number }[] = [
+      ...(entry.extraCharges ?? []).map(c => ({ description: c.description, amount: c.amount })),
+    ];
+    if (labourCharge > 0) {
+      charges.push({ description: `Labour${entry.workerBName ? ` - ${entry.workerBName}` : ''}`, amount: labourCharge });
+    }
+
+    const slipTotal = (entry.amount ?? 0) + labourCharge;
+    const slipPaid = entry.amountPaid ?? 0;
+    const slipBalance = Math.max(0, slipTotal - slipPaid);
+    const words = numberToWords(slipTotal);
+    const amountInWords = words.charAt(0).toUpperCase() + words.slice(1) + ' Only';
+
+    let sn = 0;
+    const itemRows = (entry.items ?? []).map(item => {
+      sn += 1;
+      const isCement = item.category === 'Cement';
+      const qty = isCement
+        ? `${item.qty.toLocaleString('en-PK')} Packs`
+        : `${item.qty.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} KGS`;
+      return `<tr>
+        <td class="c">${sn}</td>
+        <td>${esc(item.name)}${item.grade && !item.name.includes(item.grade) ? ` ${esc(item.grade)}` : ''}</td>
+        <td>${esc(item.quantityUnits ?? '')} ${esc(item.unit ?? '')}</td>
+        <td class="r">${qty}</td>
+        <td class="r">${item.rate.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+        <td class="r">${money(item.amount)}</td>
+      </tr>`;
+    }).join('');
+
+    const chargeRows = charges.map(ch => {
+      sn += 1;
+      return `<tr>
+        <td class="c">${sn}</td>
+        <td>${esc(ch.description)}</td>
+        <td></td><td></td><td></td>
+        <td class="r">${money(ch.amount)}</td>
+      </tr>`;
+    }).join('');
+
+    const minRows = 8;
+    const usedRows = (entry.items ?? []).length + charges.length;
+    let blankRows = '';
+    for (let i = usedRows; i < minRows; i++) {
+      blankRows += `<tr><td class="c">&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>`;
+    }
+
+    const discountAmt = Math.max(0, (entry.subtotal ?? entry.amount ?? 0) - (entry.amount ?? 0));
+
+    const win = window.open('', '_blank');
+    if (!win) return;
+    win.document.write(`<!DOCTYPE html><html><head><title>${esc(entry.invoiceNumber || 'Purchase Bill')}</title>
+      <style>
+        * { box-sizing: border-box; }
+        body { font-family: Arial, Helvetica, sans-serif; color: #000; margin: 0; padding: 24px; font-size: 12px; }
+        .sheet { max-width: 800px; margin: 0 auto; }
+        .title { text-align: center; }
+        .title span { display: inline-block; border: 1.5px solid #000; padding: 4px 28px; font-size: 16px; font-weight: bold; letter-spacing: 1px; }
+        .head { display: flex; justify-content: space-between; margin-top: 14px; gap: 24px; }
+        .head .col { flex: 1; }
+        .row { display: flex; align-items: baseline; margin-bottom: 4px; }
+        .row .lbl { font-weight: bold; white-space: nowrap; margin-right: 6px; }
+        .row .val { flex: 1; border-bottom: 1px solid #000; min-height: 15px; padding: 0 4px; }
+        .inline { display: flex; gap: 16px; }
+        .inline .row { flex: 1; }
+        table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+        th, td { border: 1px solid #000; padding: 5px 8px; font-size: 12px; }
+        th { background: #f0f0f0; text-align: left; }
+        td.r, th.r { text-align: right; }
+        td.c, th.c { text-align: center; width: 32px; }
+        .footer { display: flex; justify-content: space-between; margin-top: 14px; gap: 24px; }
+        .words { flex: 1; }
+        .words .lbl { font-weight: bold; }
+        .words .wval { border-bottom: 1px solid #000; padding: 2px 4px; min-height: 16px; display: block; margin-top: 2px; }
+        .totals { width: 280px; }
+        .totals table { margin: 0; }
+        .totals td { padding: 4px 8px; }
+        .totals td.k { font-weight: bold; border: 1px solid #000; }
+        .totals td.v { text-align: right; border: 1px solid #000; }
+        .sign { display: flex; justify-content: space-between; margin-top: 48px; }
+        .sign .line { border-top: 1px solid #000; padding-top: 4px; width: 200px; text-align: center; font-weight: bold; }
+        @media print { @page { margin: 12mm; } body { padding: 0; } }
+      </style></head><body>
+      <div class="sheet">
+        <div class="title"><span>PURCHASE BILL</span></div>
+        <div class="head">
+          <div class="col">
+            <div class="row"><span class="lbl">Bill No.:</span><span class="val">${esc(entry.invoiceNumber || '')}</span></div>
+            <div class="row"><span class="lbl">Date:</span><span class="val">${esc(formatDate(entry.date))}</span></div>
+            <div class="row"><span class="lbl">Supplier:</span><span class="val">${esc(ledgerCompany.name)}</span></div>
+            <div class="row"><span class="lbl">Address:</span><span class="val">${esc(ledgerCompany.address || '')}</span></div>
+          </div>
+          <div class="col">
+            <div class="row"><span class="lbl">Contact:</span><span class="val">${esc(ledgerCompany.contactPerson || '')}</span></div>
+            <div class="row"><span class="lbl">Phone:</span><span class="val">${esc(ledgerCompany.phone || '')}</span></div>
+            <div class="row"><span class="lbl">Due Date:</span><span class="val">${entry.dueDate ? esc(formatDate(entry.dueDate)) : ''}</span></div>
+            <div class="row"><span class="lbl">Vehicle #:</span><span class="val">${esc(entry.vehicleNumber || 'Self')}</span></div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th class="c">S#</th>
+              <th>Description</th>
+              <th>Packing</th>
+              <th class="r">Qty</th>
+              <th class="r">Rate</th>
+              <th class="r">Amount</th>
+            </tr>
+          </thead>
+          <tbody>${itemRows}${chargeRows}${blankRows}</tbody>
+        </table>
+        <div class="footer">
+          <div class="words">
+            <span class="lbl">Amount in Words:</span>
+            <span class="wval">${esc(amountInWords)}</span>
+            ${entry.note ? `<div style="margin-top:8px;"><span class="lbl">Note:</span> ${esc(entry.note)}</div>` : ''}
+          </div>
+          <div class="totals">
+            <table>
+              ${discountAmt > 0 ? `<tr><td class="k">Discount</td><td class="v">- ${money(discountAmt)}</td></tr>` : ''}
+              <tr><td class="k">Total</td><td class="v">${money(slipTotal)}</td></tr>
+              <tr><td class="k">Amount Paid</td><td class="v">${slipPaid > 0 ? money(slipPaid) : '-'}</td></tr>
+              <tr><td class="k">Balance Amount</td><td class="v">${money(slipBalance)}</td></tr>
+            </table>
+          </div>
+        </div>
+        <div class="sign">
+          <div class="line">Signature</div>
+        </div>
+      </div>
+      <script>window.onload = function(){ window.print(); }<\/script>
+      </body></html>`);
+    win.document.close();
   };
 
   return (
@@ -447,6 +757,11 @@ export default function CompaniesPage() {
           size="xl"
           footer={
             <>
+              {companyLedger.length > 0 && (
+                <button onClick={handlePrintLedger} className="btn-secondary" title="Print the full ledger statement">
+                  <Printer size={15} /> Print
+                </button>
+              )}
               <button onClick={() => openPaymentForm()} className="btn-secondary">
                 <Banknote size={15} /> Payment ₨
               </button>
@@ -499,6 +814,9 @@ export default function CompaniesPage() {
                   const desc = isPurchase
                     ? `${(e.items ?? []).length} item${(e.items ?? []).length === 1 ? '' : 's'}`
                     : (e.method ?? '');
+                  const title = isPurchase
+                    ? `${e.invoiceNumber || 'Purchase'} · ${desc}`
+                    : `${e.type} · ${desc}`;
                   const afterLabel = getBalanceLabel(e.balanceAfter);
                   return (
                     <button
@@ -513,7 +831,10 @@ export default function CompaniesPage() {
                             : <Banknote size={14} className="text-red-500" />}
                         </div>
                         <div className="min-w-0">
-                          <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{e.type} · {desc}</p>
+                          <p className="text-sm font-medium text-gray-900 dark:text-white truncate flex items-center gap-2">
+                            {title}
+                            {isPurchase && e.status && <Badge label={e.status} className="text-[9px] px-1.5 py-0" />}
+                          </p>
                           <p className="text-xs text-gray-400">{formatDate(e.date)}</p>
                         </div>
                       </div>
@@ -538,9 +859,9 @@ export default function CompaniesPage() {
       <Modal
         open={entryFormType === 'Purchase'}
         onClose={closeEntryForm}
-        title={editingEntry ? 'Edit Purchase' : 'New Purchase'}
+        title={editingEntry ? `Edit Purchase ${editingEntry.invoiceNumber || ''}`.trim() : 'New Purchase Invoice'}
         subtitle={ledgerCompany?.name}
-        size="lg"
+        size="xl"
         footer={
           <>
             <button onClick={closeEntryForm} className="btn-secondary">Cancel</button>
@@ -690,19 +1011,188 @@ export default function CompaniesPage() {
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          {/* Extra Charges */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="label mb-0">
+                Extra Charges{' '}
+                <span className="text-gray-400 font-normal">(freight, loading, etc.)</span>
+              </label>
+              <button
+                onClick={() => setPurchaseExtraCharges(c => [...c, { id: generateId('ec'), description: '', amount: 0 }])}
+                className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+              >
+                <PlusCircle size={13} /> Add Charge
+              </button>
+            </div>
+            {purchaseExtraCharges.length === 0 ? (
+              <p className="text-xs text-gray-400 italic">
+                No extra charges — click &ldquo;Add Charge&rdquo; to add freight, loading, etc.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {purchaseExtraCharges.map((ec, idx) => (
+                  <div key={ec.id} className="flex gap-2 items-end bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3">
+                    <div className="flex-1">
+                      <label className="label text-[10px]">Description</label>
+                      <input
+                        value={ec.description}
+                        onChange={e => setPurchaseExtraCharges(charges => charges.map((ch, i) => i === idx ? { ...ch, description: e.target.value } : ch))}
+                        placeholder="e.g. Freight, Loading fee..."
+                        className="input py-1.5 text-xs"
+                      />
+                    </div>
+                    <div className="w-36">
+                      <label className="label text-[10px]">Amount (PKR)</label>
+                      <input
+                        value={ec.amount || ''}
+                        onChange={e => setPurchaseExtraCharges(charges => charges.map((ch, i) => i === idx ? { ...ch, amount: parseFloat(e.target.value) || 0 } : ch))}
+                        type="number" min="0" placeholder="0"
+                        className="input py-1.5 text-xs"
+                      />
+                    </div>
+                    <button
+                      onClick={() => setPurchaseExtraCharges(charges => charges.filter((_, i) => i !== idx))}
+                      className="p-1.5 text-red-400 hover:text-red-600 pb-2"
+                    >
+                      <MinusCircle size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Dealt By (Worker B) */}
+          <div className="bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-800/30 rounded-xl p-4">
+            <p className="text-xs font-semibold text-indigo-700 dark:text-indigo-400 uppercase tracking-wide mb-3">
+              Dealt By (Worker B / Agent)
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="label">Agent / Broker</label>
+                <select
+                  value={purchaseWorkerBId}
+                  onChange={e => setPurchaseWorkerBId(e.target.value)}
+                  className="input"
+                >
+                  <option value="">— None (direct purchase) —</option>
+                  {state.workerBs.map(w => (
+                    <option key={w.id} value={w.id}>{w.name}{w.phone ? ` · ${w.phone}` : ''}</option>
+                  ))}
+                </select>
+                {state.workerBs.length === 0 && (
+                  <p className="text-[10px] text-gray-400 mt-1">No Worker B registered yet — go to Worker B page to add.</p>
+                )}
+              </div>
+              <div>
+                <label className="label">
+                  Labour Charge (PKR)
+                  {purchaseWorkerBId && <span className="text-indigo-500 ml-1 font-normal">— for {state.workerBs.find(w => w.id === purchaseWorkerBId)?.name}</span>}
+                </label>
+                <input
+                  value={purchaseWorkerBCharge}
+                  onChange={e => setPurchaseWorkerBCharge(e.target.value)}
+                  type="number"
+                  min="0"
+                  placeholder="0"
+                  disabled={!purchaseWorkerBId}
+                  className="input disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Date / Due Date / Vehicle */}
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="label">Date</label>
               <input value={purchaseDate} onChange={e => setPurchaseDate(e.target.value)} type="date" className="input" />
             </div>
-            <div className="bg-blue-50 dark:bg-blue-900/20 rounded-xl p-3 flex items-center justify-between">
-              <span className="text-sm text-blue-700 dark:text-blue-300">Total</span>
-              <span className="text-base font-bold text-blue-700 dark:text-blue-300">{formatCurrencyFull(purchaseTotal)}</span>
+            <div>
+              <label className="label">Due Date</label>
+              <input value={purchaseDueDate} onChange={e => setPurchaseDueDate(e.target.value)} type="date" className="input" />
+            </div>
+            <div>
+              <label className="label">Vehicle Number</label>
+              <input value={purchaseVehicle} onChange={e => setPurchaseVehicle(e.target.value)} placeholder="e.g. LES-1234" className="input" />
             </div>
           </div>
-          <div>
-            <label className="label">Note</label>
-            <input value={purchaseNote} onChange={e => setPurchaseNote(e.target.value)} placeholder="Optional note" className="input" />
+
+          {/* Totals section */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-3">
+              <div>
+                <label className="label">Discount</label>
+                <div className="flex gap-2">
+                  <input
+                    value={purchaseDiscount}
+                    onChange={e => setPurchaseDiscount(e.target.value)}
+                    type="number" min="0" placeholder="0"
+                    className="input flex-1"
+                  />
+                  <select
+                    value={purchaseDiscountType}
+                    onChange={e => setPurchaseDiscountType(e.target.value as 'flat' | 'percent')}
+                    className="input w-24"
+                  >
+                    <option value="flat">PKR</option>
+                    <option value="percent">%</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="label">Amount Paid (PKR)</label>
+                <input
+                  value={purchaseAmountPaid}
+                  onChange={e => setPurchaseAmountPaid(e.target.value)}
+                  type="number" min="0" placeholder="0"
+                  className="input"
+                />
+                <p className="text-[10px] text-gray-400 mt-1">Paid now — reduces what you owe this supplier.</p>
+              </div>
+              <div>
+                <label className="label">Note</label>
+                <input value={purchaseNote} onChange={e => setPurchaseNote(e.target.value)} placeholder="Optional note" className="input" />
+              </div>
+            </div>
+            <div className="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-4 space-y-2 h-fit">
+              <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400">
+                <span>Items</span>
+                <span className="font-medium text-gray-900 dark:text-white">{formatCurrencyFull(purchaseItemsTotal)}</span>
+              </div>
+              {purchaseExtraTotal > 0 && (
+                <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400">
+                  <span>Extra Charges</span>
+                  <span className="font-medium text-gray-900 dark:text-white">+ {formatCurrencyFull(purchaseExtraTotal)}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400 border-t border-gray-200 dark:border-gray-600 pt-1">
+                <span>Subtotal</span>
+                <span className="font-medium text-gray-900 dark:text-white">{formatCurrencyFull(purchaseSubtotal)}</span>
+              </div>
+              {purchaseDiscountAmt > 0 && (
+                <div className="flex justify-between text-sm text-orange-500">
+                  <span>Discount</span>
+                  <span>- {formatCurrencyFull(purchaseDiscountAmt)}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-sm font-bold text-gray-900 dark:text-white border-t border-gray-200 dark:border-gray-600 pt-2 mt-2">
+                <span>Total</span>
+                <span>{formatCurrencyFull(purchaseTotal)}</span>
+              </div>
+              <div className="flex justify-between text-sm text-green-600">
+                <span>Amount Paid</span>
+                <span>{formatCurrencyFull(purchasePaid)}</span>
+              </div>
+              <div className="flex justify-between text-sm font-bold text-red-500">
+                <span>Balance</span>
+                <span>{formatCurrencyFull(purchaseBalance)}</span>
+              </div>
+              <div className="pt-1">
+                <Badge label={purchaseStatus} />
+              </div>
+            </div>
           </div>
         </div>
       </Modal>
@@ -754,9 +1244,11 @@ export default function CompaniesPage() {
         <Modal
           open={!!detailEntryId}
           onClose={() => setDetailEntryId(null)}
-          title={detailEntry.type === 'Purchase' ? 'Purchase Details' : 'Payment Details'}
+          title={detailEntry.type === 'Purchase'
+            ? `Purchase Invoice${detailEntry.invoiceNumber ? ` ${detailEntry.invoiceNumber}` : ''}`
+            : 'Payment Details'}
           subtitle={`${formatDate(detailEntry.date)} · ${ledgerCompany?.name ?? ''}`}
-          size="md"
+          size={detailEntry.type === 'Purchase' ? 'xl' : 'md'}
           footer={
             <>
               <button
@@ -775,11 +1267,51 @@ export default function CompaniesPage() {
               >
                 <Edit2 size={15} /> Edit
               </button>
+              {detailEntry.type === 'Purchase' && (
+                <button onClick={handlePrintPurchase} className="btn-primary">
+                  <Printer size={15} /> Print / Download
+                </button>
+              )}
             </>
           }
         >
-          <div className="space-y-4">
-            {detailEntry.type === 'Purchase' ? (
+          {detailEntry.type === 'Purchase' ? (
+            <div className="space-y-4">
+              {/* Invoice header */}
+              <div className="flex flex-col sm:flex-row justify-between gap-3">
+                <div>
+                  <p className="text-lg font-bold text-gray-900 dark:text-white">Majid Steel</p>
+                  <p className="text-xs text-gray-400">Purchase Invoice</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-semibold text-gray-900 dark:text-white">{detailEntry.invoiceNumber || '—'}</p>
+                  <p className="text-xs text-gray-400">{formatDate(detailEntry.date)}</p>
+                  {detailEntry.status && <div className="mt-1 flex sm:justify-end"><Badge label={detailEntry.status} /></div>}
+                </div>
+              </div>
+
+              {/* Supplier / meta */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3 col-span-2">
+                  <p className="text-xs text-gray-400 mb-1">Supplier</p>
+                  <p className="text-sm font-semibold text-gray-900 dark:text-white">{ledgerCompany?.name}</p>
+                  <p className="text-xs text-gray-400">{ledgerCompany?.phone}{ledgerCompany?.address ? ` · ${ledgerCompany.address}` : ''}</p>
+                </div>
+                <div className="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3">
+                  <p className="text-xs text-gray-400 mb-1">Dealt By</p>
+                  <p className="text-sm font-semibold text-gray-900 dark:text-white">{detailEntry.workerBName || '—'}</p>
+                  {(detailEntry.workerBCharge ?? 0) > 0 && (
+                    <p className="text-xs text-gray-400">Labour: {formatCurrencyFull(detailEntry.workerBCharge ?? 0)}</p>
+                  )}
+                </div>
+                <div className="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3">
+                  <p className="text-xs text-gray-400 mb-1">Vehicle · Due Date</p>
+                  <p className="text-sm font-semibold text-gray-900 dark:text-white">{detailEntry.vehicleNumber || 'Self'}</p>
+                  <p className="text-xs text-gray-400">{detailEntry.dueDate ? formatDate(detailEntry.dueDate) : 'No due date'}</p>
+                </div>
+              </div>
+
+              {/* Items */}
               <table className="w-full text-sm">
                 <thead>
                   <tr>
@@ -792,15 +1324,70 @@ export default function CompaniesPage() {
                 <tbody>
                   {(detailEntry.items ?? []).map((it, i) => (
                     <tr key={i} className="table-row">
-                      <td className="table-cell font-medium">{it.name}</td>
-                      <td className="table-cell text-right">{it.qty}</td>
+                      <td className="table-cell font-medium">
+                        {it.name}
+                        {it.grade && !it.name.includes(it.grade) ? ` ${it.grade}` : ''}
+                        {it.category === 'Cement' && <span className="ml-1.5 text-[10px] text-amber-600">Cement</span>}
+                      </td>
+                      <td className="table-cell text-right">{it.qty} {it.category === 'Cement' ? 'packs' : 'kg'}</td>
                       <td className="table-cell text-right">{formatCurrencyFull(it.rate)}</td>
                       <td className="table-cell text-right font-semibold">{formatCurrencyFull(it.amount)}</td>
                     </tr>
                   ))}
+                  {(detailEntry.extraCharges ?? []).map((c, i) => (
+                    <tr key={`ec-${i}`} className="table-row">
+                      <td className="table-cell text-gray-500 italic" colSpan={3}>{c.description}</td>
+                      <td className="table-cell text-right font-semibold">{formatCurrencyFull(c.amount)}</td>
+                    </tr>
+                  ))}
+                  {(detailEntry.workerBCharge ?? 0) > 0 && (
+                    <tr className="table-row">
+                      <td className="table-cell text-gray-500 italic" colSpan={3}>Labour{detailEntry.workerBName ? ` - ${detailEntry.workerBName}` : ''}</td>
+                      <td className="table-cell text-right font-semibold">{formatCurrencyFull(detailEntry.workerBCharge ?? 0)}</td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
-            ) : (
+
+              {/* Totals */}
+              <div className="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-4 space-y-1.5">
+                <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400">
+                  <span>Subtotal</span>
+                  <span>{formatCurrencyFull(detailEntry.subtotal ?? detailEntry.amount)}</span>
+                </div>
+                {(detailEntry.subtotal ?? 0) > (detailEntry.amount ?? 0) && (
+                  <div className="flex justify-between text-sm text-orange-500">
+                    <span>Discount{detailEntry.discountType === 'percent' ? ` (${detailEntry.discount}%)` : ''}</span>
+                    <span>- {formatCurrencyFull((detailEntry.subtotal ?? 0) - detailEntry.amount)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-sm font-bold text-gray-900 dark:text-white border-t border-gray-200 dark:border-gray-600 pt-1.5">
+                  <span>Total</span>
+                  <span>{formatCurrencyFull(detailEntry.amount)}</span>
+                </div>
+                <div className="flex justify-between text-sm text-green-600">
+                  <span>Amount Paid</span>
+                  <span>{formatCurrencyFull(detailEntry.amountPaid ?? 0)}</span>
+                </div>
+                <div className="flex justify-between text-sm font-bold text-red-500">
+                  <span>Balance</span>
+                  <span>{formatCurrencyFull(detailEntry.balance ?? Math.max(0, detailEntry.amount - (detailEntry.amountPaid ?? 0)))}</span>
+                </div>
+              </div>
+
+              {detailEntry.note && (
+                <p className="text-sm text-gray-500 dark:text-gray-400 italic">&ldquo;{detailEntry.note}&rdquo;</p>
+              )}
+              <div className="flex justify-between items-center bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3">
+                <span className="text-sm text-gray-600 dark:text-gray-300">Company Balance After This Entry</span>
+                <span className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                  {formatCurrencyFull(Math.abs(detailEntry.balanceAfter))}
+                  <Badge label={getBalanceLabel(detailEntry.balanceAfter)} />
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3">
                   <p className="text-xs text-gray-400 mb-1">Method</p>
@@ -811,24 +1398,22 @@ export default function CompaniesPage() {
                   <p className="text-sm font-semibold text-gray-900 dark:text-white">{detailEntry.reference || '—'}</p>
                 </div>
               </div>
-            )}
-            {detailEntry.note && (
-              <p className="text-sm text-gray-500 dark:text-gray-400 italic">&ldquo;{detailEntry.note}&rdquo;</p>
-            )}
-            <div className="flex justify-between items-center border-t border-gray-100 dark:border-gray-700 pt-3">
-              <span className="text-sm font-semibold text-gray-900 dark:text-white">Amount</span>
-              <span className={`text-lg font-bold ${detailEntry.type === 'Purchase' ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
-                {formatCurrencyFull(detailEntry.amount)}
-              </span>
+              {detailEntry.note && (
+                <p className="text-sm text-gray-500 dark:text-gray-400 italic">&ldquo;{detailEntry.note}&rdquo;</p>
+              )}
+              <div className="flex justify-between items-center border-t border-gray-100 dark:border-gray-700 pt-3">
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">Amount</span>
+                <span className="text-lg font-bold text-red-500">{formatCurrencyFull(detailEntry.amount)}</span>
+              </div>
+              <div className="flex justify-between items-center bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3">
+                <span className="text-sm text-gray-600 dark:text-gray-300">Balance After This Entry</span>
+                <span className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                  {formatCurrencyFull(Math.abs(detailEntry.balanceAfter))}
+                  <Badge label={getBalanceLabel(detailEntry.balanceAfter)} />
+                </span>
+              </div>
             </div>
-            <div className="flex justify-between items-center bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3">
-              <span className="text-sm text-gray-600 dark:text-gray-300">Balance After This Entry</span>
-              <span className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                {formatCurrencyFull(Math.abs(detailEntry.balanceAfter))}
-                <Badge label={getBalanceLabel(detailEntry.balanceAfter)} />
-              </span>
-            </div>
-          </div>
+          )}
         </Modal>
       )}
 

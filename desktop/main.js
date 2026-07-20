@@ -162,16 +162,20 @@ async function syncNow(cfg) {
 
 async function doSync(cfg) {
   setStatus('syncing…');
+  // seedOnly: this boot sync only PULL-seeds an empty local DB on a fresh
+  // install. All other syncing is manual — the in-app Save button pushes to
+  // the cloud, the Refresh button pulls from it.
   const result = await runSync({
     localUri: LOCAL_URI,
     atlasUri: cfg.atlasUri,
     log: msg => console.log('[sync]', msg),
+    seedOnly: true,
   });
   const time = new Date().toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit' });
   if (result.mode === 'push' || result.mode === 'pull') {
     setStatus(`synced ${time}`);
   } else if (result.mode === 'offline') {
-    setStatus('offline — will sync when internet returns');
+    setStatus('offline — data is safe locally');
   } else if (result.mode === 'idle') {
     setStatus('');
   } else {
@@ -182,9 +186,9 @@ async function doSync(cfg) {
 }
 
 function startSyncLoop(cfg) {
-  const intervalMs = Math.max(1, cfg.syncIntervalMinutes || 3) * 60 * 1000;
-  setTimeout(() => syncNow(cfg).catch(() => {}), 5000);          // shortly after boot
-  syncTimer = setInterval(() => syncNow(cfg).catch(() => {}), intervalMs);
+  // One boot-time pass only (fresh-install seeding). No periodic auto-push —
+  // cloud sync is fully manual via the in-app Save / Refresh buttons.
+  setTimeout(() => syncNow(cfg).catch(() => {}), 5000);
 }
 
 // ── App lifecycle ────────────────────────────────────────────────────────────

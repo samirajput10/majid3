@@ -7,6 +7,7 @@ export type LedgerBalanceLabel = 'Payable' | 'Advance' | 'Settled';
 interface EntryLike {
   type: string;      // 'Purchase' | 'Payment'
   amount: number;
+  amountPaid?: number; // Purchase only: paid at purchase time, reduces payable
   date: string;       // YYYY-MM-DD
   createdAt?: string | Date;
 }
@@ -20,14 +21,15 @@ function chronoKey(e: any): string {
 /**
  * Sorts entries chronologically (oldest first) and attaches `balanceAfter` —
  * the running balance immediately after each entry. Purchases add to what we
- * owe, Payments subtract. Returns a NEW array in chronological (oldest-first)
- * order; sort again for display if you need newest-first.
+ * owe (net of any amount paid on the spot), Payments subtract. Returns a NEW
+ * array in chronological (oldest-first) order; sort again for display if you
+ * need newest-first.
  */
 export function computeRunningBalances<T extends EntryLike>(entries: T[]): (T & { balanceAfter: number })[] {
   const sorted = [...entries].sort((a, b) => chronoKey(a).localeCompare(chronoKey(b)));
   let balance = 0;
   return sorted.map(e => {
-    balance += e.type === 'Purchase' ? e.amount : -e.amount;
+    balance += e.type === 'Purchase' ? e.amount - (e.amountPaid ?? 0) : -e.amount;
     return { ...e, balanceAfter: balance };
   });
 }
@@ -48,7 +50,9 @@ export interface LedgerSummary {
 
 export function getLedgerSummary<T extends EntryLike>(entries: T[]): LedgerSummary {
   const totalPurchases = entries.filter(e => e.type === 'Purchase').reduce((s, e) => s + e.amount, 0);
-  const totalPayments = entries.filter(e => e.type === 'Payment').reduce((s, e) => s + e.amount, 0);
+  // Payments made at purchase time (invoice amountPaid) count toward payments too
+  const totalPayments = entries.reduce((s, e) =>
+    s + (e.type === 'Payment' ? e.amount : (e.amountPaid ?? 0)), 0);
   const balance = totalPurchases - totalPayments;
   return {
     balance: Math.abs(balance),

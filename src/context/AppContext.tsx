@@ -143,6 +143,20 @@ interface LedgerEntryInput {
   amount?: number;
   method?: 'Bank Transfer' | 'Cheque' | 'Cash' | 'Other';
   reference?: string;
+  // Purchase-invoice fields (Purchase only) — client-computed for optimistic
+  // display, recomputed authoritatively server-side.
+  subtotal?: number;
+  discount?: number;
+  discountType?: 'flat' | 'percent';
+  extraCharges?: { description: string; amount: number }[];
+  amountPaid?: number;
+  balance?: number;
+  status?: 'Paid' | 'Pending' | 'Partial';
+  vehicleNumber?: string;
+  dueDate?: string;
+  workerBId?: string;
+  workerBName?: string;
+  workerBCharge?: number;
 }
 
 // ─── API helper (offline-aware) ────────────────────────────────────────────
@@ -208,6 +222,8 @@ interface AppContextType {
   pendingCount: number;
   syncStatus: 'saved' | 'pending' | 'syncing';
   syncNow: () => Promise<void>;
+  refreshing: boolean;
+  refreshNow: () => Promise<void>;
   addCompany: (data: Omit<Company, 'id' | 'createdAt' | 'totalPurchased' | 'totalCost'>) => Promise<Company>;
   updateCompany: (c: Company) => Promise<void>;
   deleteCompany: (id: string) => Promise<void>;
@@ -250,7 +266,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   const [syncStatus, setSyncStatus] = useState<'saved' | 'pending' | 'syncing'>('saved');
+  const [refreshing, setRefreshing] = useState(false);
   const syncingRef = useRef(false);
+  const refreshingRef = useRef(false);
 
   // ── Full reload: fetch every collection and replace local state ───────────
   // Used on mount, and again after a successful sync so anything only
@@ -323,24 +341,47 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!syncingRef.current) setSyncStatus(n > 0 || isDirty() ? 'pending' : 'saved');
   }, []);
 
+  // Auto path: replay queued offline writes so they reach the (local) server
+  // and aren't lost — but do NOT push to the cloud. Cloud sync is manual-only,
+  // via the Save button (syncNow) and Refresh button (refreshNow).
+  const flushPending = useCallback(async () => {
+    if (syncingRef.current) return;
+    if (getQueue().length === 0) { refreshPendingCount(); return; }
+    syncingRef.current = true;
+    setSyncStatus('syncing');
+    try {
+      const { success } = await flushQueue();
+      if (success) {
+        try { await reloadAll(); } catch { /* non-critical */ }
+      }
+    } finally {
+      syncingRef.current = false;
+      refreshPendingCount();
+    }
+  }, [reloadAll, refreshPendingCount]);
+
+  // Manual Save: flush queued writes, then push the whole local DB to the
+  // cloud ('idle' no-op on web where MONGODB_URI already is the cloud).
   const syncNow = useCallback(async () => {
     if (syncingRef.current) return;
     syncingRef.current = true;
     setSyncStatus('syncing');
     try {
-      // 1. Replay any writes that never reached the server (browser offline)
       let ok = true;
       if (getQueue().length > 0) {
         ok = (await flushQueue()).success;
       }
-      // 2. Push the local database to the cloud (desktop app) — 'idle' on web
       if (ok) {
         try {
-          const res = await fetch('/api/sync', { method: 'POST' });
+          const res = await fetch('/api/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ direction: 'push' }),
+          });
           const j = await res.json().catch(() => ({ mode: 'error' }));
           ok = res.ok && j.mode !== 'offline' && j.mode !== 'error';
         } catch {
-          ok = false; // network down — stay pending, retry later
+          ok = false; // network down — stay pending, click Save again later
         }
       }
       if (ok) {
@@ -353,20 +394,48 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [reloadAll, refreshPendingCount]);
 
+  // Manual Refresh: pull the latest cloud data into the local DB (desktop),
+  // then refetch everything so the UI shows it. On web the pull is 'idle'
+  // and this is simply a full data reload.
+  const refreshNow = useCallback(async () => {
+    if (syncingRef.current || refreshingRef.current) return;
+    refreshingRef.current = true;
+    setRefreshing(true);
+    try {
+      let pulled = false;
+      try {
+        const res = await fetch('/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ direction: 'pull' }),
+        });
+        const j = await res.json().catch(() => ({ mode: 'error' }));
+        pulled = res.ok && j.mode === 'pull';
+      } catch { /* offline — still refetch from the local server below */ }
+      try { await reloadAll(); } catch { /* non-critical */ }
+      // After a real pull, local mirrors the cloud — nothing left unsynced.
+      if (pulled) clearDirty();
+    } finally {
+      refreshingRef.current = false;
+      setRefreshing(false);
+      refreshPendingCount();
+    }
+  }, [reloadAll, refreshPendingCount]);
+
   useEffect(() => {
     refreshPendingCount();
     // Any mutation anywhere in the app un-presses the button back to "Save"
     const handleMutation = () => { markDirty(); refreshPendingCount(); };
     window.addEventListener('sv:mutation', handleMutation);
-    // Auto-sync only when there are queued writes that never reached the
-    // server — the dirty-only state waits for the user to click Save.
-    const handleOnline = () => { if (getQueue().length > 0) syncNow(); };
+    // Auto-flush only replays queued writes that never reached the server —
+    // it never pushes to the cloud; that waits for the user to click Save.
+    const handleOnline = () => { flushPending(); };
     const handleOffline = () => { refreshPendingCount(); };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-    if (navigator.onLine && getQueue().length > 0) syncNow(); // leftover queue from a previous session
+    if (navigator.onLine) flushPending(); // leftover queue from a previous session
     const retryTimer = setInterval(() => {
-      if (navigator.onLine && getQueue().length > 0) syncNow();
+      if (navigator.onLine && getQueue().length > 0) flushPending();
     }, 30000);
     return () => {
       window.removeEventListener('sv:mutation', handleMutation);
@@ -374,7 +443,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener('offline', handleOffline);
       clearInterval(retryTimer);
     };
-  }, [syncNow, refreshPendingCount]);
+  }, [flushPending, refreshPendingCount]);
 
   // ── CRUD helpers ───────────────────────────────────────────────────────────
   const addCompany = useCallback(async (
@@ -472,10 +541,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const addLedgerEntry = useCallback(async (data: LedgerEntryInput) => {
     const payload = { ...data, _id: generateObjectId() };
-    const amount = data.type === 'Purchase'
-      ? (data.items ?? []).reduce((s, it) => s + it.qty * it.rate, 0)
-      : (data.amount ?? 0);
-    const optimisticEntry = norm({ ...payload, amount, createdAt: new Date().toISOString() }) as unknown as LedgerEntry;
+    const amount = data.amount
+      ?? (data.type === 'Purchase'
+        ? (data.items ?? []).reduce((s, it) => s + it.qty * it.rate, 0)
+        : 0);
+    const optimisticEntry = norm({
+      ...payload,
+      amount,
+      // Real PB- numbers are assigned server-side; replaced after sync + refetch
+      invoiceNumber: data.type === 'Purchase' ? 'Pending…' : undefined,
+      createdAt: new Date().toISOString(),
+    }) as unknown as LedgerEntry;
     await api('/api/ledger', { method: 'POST', body: JSON.stringify(payload) }, () => optimisticEntry);
     try {
       await refreshLedgerForCompany(data.companyId);
@@ -484,18 +560,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       applyLedgerOptimistically(data.companyId, [...others, optimisticEntry]);
     }
     if (data.type === 'Purchase') {
-      // A matching stock item may have been bumped server-side
+      // Stock was bumped/created and Worker B totals updated server-side
       try {
-        const freshStock = await api<StockItem[]>('/api/stock');
-        dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock) } });
+        const [freshStock, freshWBs] = await Promise.all([
+          api<StockItem[]>('/api/stock'),
+          api<WorkerB[]>('/api/worker-b'),
+        ]);
+        dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock), workerBs: normAll(freshWBs) } });
       } catch { /* non-critical */ }
     }
   }, [refreshLedgerForCompany, applyLedgerOptimistically, state.ledgerEntries]);
 
   const updateLedgerEntry = useCallback(async (id: string, data: LedgerEntryInput) => {
-    const amount = data.type === 'Purchase'
-      ? (data.items ?? []).reduce((s, it) => s + it.qty * it.rate, 0)
-      : (data.amount ?? 0);
+    const amount = data.amount
+      ?? (data.type === 'Purchase'
+        ? (data.items ?? []).reduce((s, it) => s + it.qty * it.rate, 0)
+        : 0);
     const existing = state.ledgerEntries.find(e => e.id === id);
     const optimisticEntry = { ...(existing ?? {} as LedgerEntry), ...data, id, amount } as LedgerEntry;
     await api(`/api/ledger/${id}`, { method: 'PUT', body: JSON.stringify(data) }, () => optimisticEntry);
@@ -505,10 +585,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const others = state.ledgerEntries.filter(e => e.companyId === data.companyId && e.id !== id);
       applyLedgerOptimistically(data.companyId, [...others, optimisticEntry]);
     }
-    // Purchase edits may have adjusted stock (old effect reversed, new effect applied)
+    // Purchase edits may have adjusted stock and Worker B totals server-side
     try {
-      const freshStock = await api<StockItem[]>('/api/stock');
-      dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock) } });
+      const [freshStock, freshWBs] = await Promise.all([
+        api<StockItem[]>('/api/stock'),
+        api<WorkerB[]>('/api/worker-b'),
+      ]);
+      dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock), workerBs: normAll(freshWBs) } });
     } catch { /* non-critical */ }
   }, [refreshLedgerForCompany, applyLedgerOptimistically, state.ledgerEntries]);
 
@@ -520,10 +603,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const remaining = state.ledgerEntries.filter(e => e.companyId === companyId && e.id !== id);
       applyLedgerOptimistically(companyId, remaining);
     }
-    // Deleting a Purchase reverses its stock effect server-side
+    // Deleting a Purchase reverses its stock effect and Worker B totals server-side
     try {
-      const freshStock = await api<StockItem[]>('/api/stock');
-      dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock) } });
+      const [freshStock, freshWBs] = await Promise.all([
+        api<StockItem[]>('/api/stock'),
+        api<WorkerB[]>('/api/worker-b'),
+      ]);
+      dispatch({ type: 'SET_DATA', payload: { stockItems: normAll(freshStock), workerBs: normAll(freshWBs) } });
     } catch { /* non-critical */ }
   }, [refreshLedgerForCompany, applyLedgerOptimistically, state.ledgerEntries]);
 
@@ -693,7 +779,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   return (
     <AppContext.Provider value={{
       state, loading, error, dispatch,
-      pendingCount, syncStatus, syncNow,
+      pendingCount, syncStatus, syncNow, refreshing, refreshNow,
       addCompany, updateCompany, deleteCompany,
       addStock, updateStock, deleteStock,
       addScrap, deleteScrap, restoreScrap,

@@ -73,18 +73,40 @@ export interface LedgerItem {
   notes?: string;
 }
 
+export interface LedgerExtraCharge {
+  id?: string;
+  description: string;
+  amount: number;
+}
+
+export type PurchaseStatus = 'Paid' | 'Pending' | 'Partial';
+
 export interface LedgerEntry {
   id: string;
   companyId: string;
   type: LedgerEntryType;
   date: string;             // YYYY-MM-DD, user-assigned entry date
-  amount: number;           // Purchase: sum of items · Payment: amount paid
+  amount: number;           // Purchase: invoice total (subtotal − discount) · Payment: amount paid
   items?: LedgerItem[];     // Purchase only
   method?: PaymentMethod;   // Payment only
   reference?: string;       // Payment only
   note?: string;
   createdAt: string;        // timestamp — tie-breaks same-day ordering
   balanceAfter: number;     // running balance right after this entry (signed: + = Payable, − = Advance)
+  // ── Purchase-invoice fields (Purchase only, mirror of Invoice) ──────────
+  invoiceNumber?: string;   // PB-{year}-{0001}, server-assigned
+  subtotal?: number;        // items + extra charges
+  discount?: number;
+  discountType?: 'flat' | 'percent';
+  extraCharges?: LedgerExtraCharge[];
+  amountPaid?: number;      // paid at purchase time — reduces payable
+  balance?: number;         // amount − amountPaid
+  status?: PurchaseStatus;
+  vehicleNumber?: string;
+  dueDate?: string;
+  workerBId?: string;
+  workerBName?: string;
+  workerBCharge?: number;
 }
 
 // ─── Expense ────────────────────────────────────────────────────────────────

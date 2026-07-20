@@ -71,8 +71,10 @@ async function copyAll(fromDb, toDb, { mirror, log }) {
 
 /**
  * Runs one sync pass. Returns { mode: 'pull'|'push'|'idle'|'offline', ... }.
+ * seedOnly: only PULL-seed an empty local DB (fresh install); never push.
+ * Used by the boot sync now that pushing is manual (the in-app Save button).
  */
-async function runSync({ localUri, atlasUri, log = () => {} }) {
+async function runSync({ localUri, atlasUri, log = () => {}, seedOnly = false }) {
   if (!atlasUri) return { mode: 'idle', reason: 'no atlas uri configured' };
 
   const local = new MongoClient(localUri, { serverSelectionTimeoutMS: 5000 });
@@ -119,6 +121,10 @@ async function runSync({ localUri, atlasUri, log = () => {} }) {
       // Atlas is empty but local has data (seed marker was stale) — fall
       // through to push after clearing the marker.
       await meta.replaceOne({ _id: 'seed' }, { _id: 'seed', complete: true }, { upsert: true });
+    }
+
+    if (seedOnly) {
+      return { mode: 'idle', reason: 'seed-only sync — push is manual (Save button)' };
     }
 
     log('Mirroring local database to Atlas (' + localCount + ' docs)...');

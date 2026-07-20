@@ -23,7 +23,7 @@ const COLLECTIONS = [
 ];
 
 export interface AtlasSyncResult {
-  mode: 'push' | 'idle' | 'offline' | 'error';
+  mode: 'push' | 'pull' | 'idle' | 'offline' | 'error';
   reason?: string;
 }
 
@@ -35,14 +35,10 @@ async function countAll(db: Db): Promise<number> {
   return total;
 }
 
-export async function runAtlasPush(): Promise<AtlasSyncResult> {
-  const localUri = process.env.MONGODB_URI;
-  const atlasUri = process.env.ATLAS_URI;
-  if (!localUri) return { mode: 'error', reason: 'MONGODB_URI is not set' };
-  if (!atlasUri || atlasUri === localUri) {
-    return { mode: 'idle', reason: 'no separate cloud database configured' };
-  }
-
+// Connects both ends; returns clients, or an error/offline result to bubble up.
+async function connectBoth(localUri: string, atlasUri: string): Promise<
+  { local: MongoClient; atlas: MongoClient } | AtlasSyncResult
+> {
   const local = new MongoClient(localUri, { serverSelectionTimeoutMS: 5000 });
   const atlas = new MongoClient(atlasUri, { serverSelectionTimeoutMS: 10000 });
 
@@ -62,6 +58,42 @@ export async function runAtlasPush(): Promise<AtlasSyncResult> {
     return { mode: 'offline', reason: String(e instanceof Error ? e.message.split('\n')[0] : e) };
   }
 
+  return { local, atlas };
+}
+
+// Mirror-copies every collection from one DB to the other: docs missing from
+// the source are deleted from the target, everything else is upserted.
+async function mirrorCopy(fromDb: Db, toDb: Db) {
+  for (const name of COLLECTIONS) {
+    const docs = await fromDb.collection(name).find().toArray();
+    const target = toDb.collection(name);
+    // Delete first so unique indexes can't collide with incoming upserts.
+    const ids = docs.map(d => d._id);
+    await target.deleteMany(ids.length ? { _id: { $nin: ids } } : {});
+    for (let i = 0; i < docs.length; i += 500) {
+      const batch = docs.slice(i, i + 500);
+      await target.bulkWrite(
+        batch.map(doc => ({
+          replaceOne: { filter: { _id: doc._id }, replacement: doc, upsert: true },
+        })),
+        { ordered: false }
+      );
+    }
+  }
+}
+
+export async function runAtlasPush(): Promise<AtlasSyncResult> {
+  const localUri = process.env.MONGODB_URI;
+  const atlasUri = process.env.ATLAS_URI;
+  if (!localUri) return { mode: 'error', reason: 'MONGODB_URI is not set' };
+  if (!atlasUri || atlasUri === localUri) {
+    return { mode: 'idle', reason: 'no separate cloud database configured' };
+  }
+
+  const conn = await connectBoth(localUri, atlasUri);
+  if ('mode' in conn) return conn;
+  const { local, atlas } = conn;
+
   try {
     const localDb = local.db(DB_NAME);
     const atlasDb = atlas.db(DB_NAME);
@@ -74,24 +106,48 @@ export async function runAtlasPush(): Promise<AtlasSyncResult> {
       return { mode: 'idle', reason: 'initial seed still in progress' };
     }
 
-    for (const name of COLLECTIONS) {
-      const docs = await localDb.collection(name).find().toArray();
-      const target = atlasDb.collection(name);
-      // Mirror semantics — delete first so Atlas docs removed locally (and
-      // unique-index collisions) can't survive the upsert pass.
-      const ids = docs.map(d => d._id);
-      await target.deleteMany(ids.length ? { _id: { $nin: ids } } : {});
-      for (let i = 0; i < docs.length; i += 500) {
-        const batch = docs.slice(i, i + 500);
-        await target.bulkWrite(
-          batch.map(doc => ({
-            replaceOne: { filter: { _id: doc._id }, replacement: doc, upsert: true },
-          })),
-          { ordered: false }
-        );
-      }
-    }
+    await mirrorCopy(localDb, atlasDb);
     return { mode: 'push' };
+  } catch (e) {
+    return { mode: 'error', reason: String(e instanceof Error ? e.message.split('\n')[0] : e) };
+  } finally {
+    await local.close().catch(() => {});
+    await atlas.close().catch(() => {});
+  }
+}
+
+// Refresh: mirror the cloud (Atlas) INTO the local database, so this PC sees
+// the latest data entered elsewhere. Guard: an empty cloud never wipes local
+// data. On the web deployment (no separate ATLAS_URI) this is 'idle' and the
+// caller just refetches from its own database.
+export async function runAtlasPull(): Promise<AtlasSyncResult> {
+  const localUri = process.env.MONGODB_URI;
+  const atlasUri = process.env.ATLAS_URI;
+  if (!localUri) return { mode: 'error', reason: 'MONGODB_URI is not set' };
+  if (!atlasUri || atlasUri === localUri) {
+    return { mode: 'idle', reason: 'no separate cloud database configured' };
+  }
+
+  const conn = await connectBoth(localUri, atlasUri);
+  if ('mode' in conn) return conn;
+  const { local, atlas } = conn;
+
+  try {
+    const localDb = local.db(DB_NAME);
+    const atlasDb = atlas.db(DB_NAME);
+
+    const atlasCount = await countAll(atlasDb);
+    if (atlasCount === 0) return { mode: 'idle', reason: 'cloud database is empty' };
+
+    await mirrorCopy(atlasDb, localDb);
+    // The local DB now matches the cloud — mark the seed complete so the
+    // desktop boot sync never mistakes this state for a half-finished seed.
+    await localDb.collection('_syncmeta').replaceOne(
+      { _id: 'seed' } as never,
+      { _id: 'seed', complete: true },
+      { upsert: true }
+    );
+    return { mode: 'pull' };
   } catch (e) {
     return { mode: 'error', reason: String(e instanceof Error ? e.message.split('\n')[0] : e) };
   } finally {

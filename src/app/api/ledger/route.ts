@@ -2,8 +2,10 @@ import { NextResponse } from 'next/server';
 import { connectDB } from '@/lib/db';
 import { LedgerEntry } from '@/lib/models/LedgerEntry';
 import { Company } from '@/lib/models/Company';
+import { WorkerB } from '@/lib/models/WorkerB';
 import { computeRunningBalances } from '@/lib/ledger';
 import { applyStockForItems } from '@/lib/stockSync';
+import { normalizePurchaseBody } from '@/lib/purchase';
 
 export async function GET(req: Request) {
   try {
@@ -45,30 +47,15 @@ export async function POST(req: Request) {
     }
 
     if (body.type === 'Purchase') {
-      if (!Array.isArray(body.items) || body.items.length === 0) {
-        return NextResponse.json({ error: 'At least one item is required for a purchase' }, { status: 400 });
+      const err = normalizePurchaseBody(body);
+      if (err) return NextResponse.json({ error: err }, { status: 400 });
+
+      // Server-assigned purchase invoice number (PB- prefix, so it can never
+      // collide with the sales SV- sequence).
+      if (!body.invoiceNumber || body.invoiceNumber === 'Pending…') {
+        const count = await LedgerEntry.countDocuments({ type: 'Purchase' });
+        body.invoiceNumber = `PB-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
       }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      body.items = body.items.map((it: any) => ({
-        name: it.name,
-        qty: Number(it.qty) || 0,
-        rate: Number(it.rate) || 0,
-        amount: (Number(it.qty) || 0) * (Number(it.rate) || 0),
-        stockItemId: it.stockItemId || '',
-        category: it.category || 'Steel',
-        grade: it.grade || '',
-        unit: it.unit || 'piece',
-        quantityUnits: Number(it.quantityUnits) || 0,
-        batchNumber: it.batchNumber || '',
-        location: it.location || '',
-        notes: it.notes || '',
-      }));
-      if (body.items.some((it: { name: string; qty: number }) => !it.name || it.qty <= 0)) {
-        return NextResponse.json({ error: 'Each item needs a name and a quantity above zero' }, { status: 400 });
-      }
-      body.amount = body.items.reduce((s: number, it: { amount: number }) => s + it.amount, 0);
-      body.method = undefined;
-      body.reference = '';
 
       // Create/bump the real StockItem(s) first so stockItemId is persisted on the entry.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -88,6 +75,14 @@ export async function POST(req: Request) {
     }
 
     const entry = await LedgerEntry.create(body);
+
+    // Worker B (labour agent) totals — mirror of the customer invoice flow
+    if (body.type === 'Purchase' && body.workerBId) {
+      await WorkerB.findByIdAndUpdate(body.workerBId, {
+        $inc: { totalEarnings: body.workerBCharge ?? 0, totalDeals: 1 },
+      });
+    }
+
     return NextResponse.json(entry, { status: 201 });
   } catch (err) {
     console.error('[POST /api/ledger]', err);

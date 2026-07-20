@@ -12,11 +12,9 @@ import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import EmptyState from '@/components/ui/EmptyState';
 import StatCard from '@/components/ui/StatCard';
 import Badge from '@/components/ui/Badge';
-import { formatCurrency, formatCurrencyFull, formatDate, todayISO, generateId, normalizePhone } from '@/lib/utils';
-import type { Invoice, InvoiceItem, ExtraCharge, SteelType, CementType, ProductCategory, InvoiceType, InvoiceStatus } from '@/lib/types';
-
-const STEEL_TYPES: SteelType[] = ['Rod', 'Sheet', 'Bar', 'Angle', 'Channel', 'Pipe', 'Coil', 'Beam'];
-const CEMENT_TYPES: CementType[] = ['OPC', 'SRC', 'White Cement', 'Block Cement', 'Other'];
+import { formatCurrency, formatCurrencyFull, formatDate, todayISO, generateId, normalizePhone, numberToWords } from '@/lib/utils';
+import type { Invoice, InvoiceItem, ExtraCharge, ProductCategory, InvoiceType, InvoiceStatus } from '@/lib/types';
+import { STEEL_TYPES, CEMENT_TYPES } from '@/lib/constants';
 
 function newItem(category: ProductCategory = 'Steel'): InvoiceItem {
   return {
@@ -39,46 +37,6 @@ function newCharge(): ExtraCharge {
 
 function calcItem(item: InvoiceItem): InvoiceItem {
   return { ...item, totalPrice: item.weightKg * item.pricePerKg };
-}
-
-// ─── Amount in words (international system) ──────────────────────────────────
-function numberToWords(value: number): string {
-  const n = Math.floor(Math.abs(value));
-  if (n === 0) return 'zero';
-  const ones = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
-    'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
-  const tens = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
-  const scales = ['', 'thousand', 'million', 'billion', 'trillion'];
-
-  const under1000 = (num: number): string => {
-    let str = '';
-    if (num >= 100) {
-      str += ones[Math.floor(num / 100)] + ' hundred';
-      num %= 100;
-      if (num) str += ' ';
-    }
-    if (num >= 20) {
-      str += tens[Math.floor(num / 10)];
-      if (num % 10) str += ' ' + ones[num % 10];
-    } else if (num > 0) {
-      str += ones[num];
-    }
-    return str;
-  };
-
-  const groups: number[] = [];
-  let rest = n;
-  while (rest > 0) {
-    groups.push(rest % 1000);
-    rest = Math.floor(rest / 1000);
-  }
-
-  const parts: string[] = [];
-  for (let i = groups.length - 1; i >= 0; i--) {
-    if (groups[i] === 0) continue;
-    parts.push(under1000(groups[i]) + (scales[i] ? ' ' + scales[i] : ''));
-  }
-  return parts.join(' ');
 }
 
 const EMPTY_NEW_CUSTOMER = { name: '', phone: '', address: '' };
