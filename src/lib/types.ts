@@ -90,6 +90,7 @@ export interface LedgerEntry {
   items?: LedgerItem[];     // Purchase only
   method?: PaymentMethod;   // Payment only
   reference?: string;       // Payment only
+  direction?: 'to_company' | 'from_company'; // Payment only: paid to them (default) or received from them
   note?: string;
   createdAt: string;        // timestamp — tie-breaks same-day ordering
   balanceAfter: number;     // running balance right after this entry (signed: + = Payable, − = Advance)

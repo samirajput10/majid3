@@ -28,6 +28,9 @@ const LedgerEntrySchema = new Schema({
   items:       { type: [LedgerItemSchema], default: undefined },  // Purchase only
   method:      { type: String, enum: ['Bank Transfer', 'Cheque', 'Cash', 'Other'], default: undefined }, // Payment only
   reference:   { type: String, default: '' },       // Payment only
+  // Payment only — 'to_company' (you paid them, reduces payable) or
+  // 'from_company' (they gave you money/advance, increases payable)
+  direction:   { type: String, enum: ['to_company', 'from_company'], default: 'to_company' },
   note:        { type: String, default: '' },
   // ── Purchase-invoice fields (Purchase only, mirror of Invoice.ts) ────────
   invoiceNumber: { type: String, default: '' },     // PB-{year}-{0001}, server-assigned

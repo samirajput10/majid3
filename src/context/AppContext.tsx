@@ -143,6 +143,8 @@ interface LedgerEntryInput {
   amount?: number;
   method?: 'Bank Transfer' | 'Cheque' | 'Cash' | 'Other';
   reference?: string;
+  direction?: 'to_company' | 'from_company'; // Payment only
+
   // Purchase-invoice fields (Purchase only) — client-computed for optimistic
   // display, recomputed authoritatively server-side.
   subtotal?: number;

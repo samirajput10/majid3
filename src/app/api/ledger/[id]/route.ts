@@ -44,6 +44,7 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
       if (!['Bank Transfer', 'Cheque', 'Cash', 'Other'].includes(body.method)) {
         return NextResponse.json({ error: 'A valid payment method is required' }, { status: 400 });
       }
+      body.direction = body.direction === 'from_company' ? 'from_company' : 'to_company';
       body.items = undefined;
     }
 

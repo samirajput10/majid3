@@ -75,6 +75,7 @@ export default function CompaniesPage() {
   const [paymentReference, setPaymentReference] = useState('');
   const [paymentDate, setPaymentDate] = useState(todayISO());
   const [paymentNote, setPaymentNote] = useState('');
+  const [paymentDirection, setPaymentDirection] = useState<'to_company' | 'from_company'>('to_company');
 
   const filtered = state.companies.filter(c =>
     c.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -145,7 +146,7 @@ export default function CompaniesPage() {
     const q = ledgerSearch.toLowerCase();
     const desc = e.type === 'Purchase'
       ? (e.items ?? []).map(i => i.name).join(' ')
-      : `${e.method ?? ''} ${e.reference ?? ''}`;
+      : `${e.direction === 'from_company' ? 'received' : ''} ${e.method ?? ''} ${e.reference ?? ''}`;
     return e.type.toLowerCase().includes(q) || desc.toLowerCase().includes(q) || (e.note ?? '').toLowerCase().includes(q);
   });
   const ledgerSummary = getLedgerSummary(companyLedger);
@@ -218,6 +219,7 @@ export default function CompaniesPage() {
       setPaymentReference(entry.reference ?? '');
       setPaymentDate(entry.date);
       setPaymentNote(entry.note ?? '');
+      setPaymentDirection(entry.direction === 'from_company' ? 'from_company' : 'to_company');
     } else {
       setEditingEntry(null);
       setPaymentAmount('');
@@ -225,6 +227,7 @@ export default function CompaniesPage() {
       setPaymentReference('');
       setPaymentDate(todayISO());
       setPaymentNote('');
+      setPaymentDirection('to_company');
     }
     setEntryFormType('Payment');
   };
@@ -319,6 +322,7 @@ export default function CompaniesPage() {
       const data = {
         companyId: ledgerCompanyId, type: 'Payment' as const, date: paymentDate,
         amount: amt, method: paymentMethod, reference: paymentReference, note: paymentNote,
+        direction: paymentDirection,
       };
       if (editingEntry) await updateLedgerEntry(editingEntry.id, data);
       else await addLedgerEntry(data);
@@ -351,16 +355,19 @@ export default function CompaniesPage() {
 
     const rows = entries.map(e => {
       const isPurchase = e.type === 'Purchase';
+      const isReceived = !isPurchase && e.direction === 'from_company';
       const details = isPurchase
         ? `${esc(e.invoiceNumber || 'Purchase')}${(e.items ?? []).length
             ? ' — ' + (e.items ?? []).map(i => `${esc(i.name)} (${i.qty} ${i.category === 'Cement' ? 'packs' : 'kg'})`).join(', ')
             : ''}`
-        : `Payment — ${esc(e.method ?? '')}${e.reference ? ` · ${esc(e.reference)}` : ''}`;
+        : `${isReceived ? 'Received from company' : 'Payment'} — ${esc(e.method ?? '')}${e.reference ? ` · ${esc(e.reference)}` : ''}`;
       const note = e.note ? `<div class="note">${esc(e.note)}</div>` : '';
-      const debit = isPurchase ? money(e.amount) : '';
+      // Debit column: what increases the payable (purchases and money the
+      // company handed you); Credit column: what you paid them.
+      const debit = isPurchase ? money(e.amount) : (isReceived ? money(e.amount) : '');
       const credit = isPurchase
         ? ((e.amountPaid ?? 0) > 0 ? money(e.amountPaid ?? 0) : '')
-        : money(e.amount);
+        : (isReceived ? '' : money(e.amount));
       return `<tr>
         <td>${esc(formatDate(e.date))}</td>
         <td>${details}${note}</td>
@@ -420,7 +427,7 @@ export default function CompaniesPage() {
             <tr>
               <th style="width:90px;">Date</th>
               <th>Details</th>
-              <th class="r">Purchase</th>
+              <th class="r">Purchase / Received</th>
               <th class="r">Paid</th>
               <th class="r">Balance</th>
             </tr>
@@ -430,6 +437,7 @@ export default function CompaniesPage() {
         <div class="totals">
           <table>
             <tr><td class="k">Total Purchases</td><td class="v">${money(s.totalPurchases)}</td></tr>
+            ${s.totalReceived > 0 ? `<tr><td class="k">Received from Company</td><td class="v">${money(s.totalReceived)}</td></tr>` : ''}
             <tr><td class="k">Total Payments</td><td class="v">${money(s.totalPayments)}</td></tr>
             <tr><td class="k">Current Balance</td><td class="v">${money(s.balance)} ${esc(s.label)}</td></tr>
           </table>
@@ -783,8 +791,11 @@ export default function CompaniesPage() {
                 {formatCurrency(ledgerSummary.balance)}
               </p>
               <div className="mt-2 flex justify-center"><Badge label={ledgerSummary.label} /></div>
-              <div className="flex justify-center gap-6 mt-3 text-xs text-gray-400">
+              <div className="flex justify-center gap-6 mt-3 text-xs text-gray-400 flex-wrap">
                 <span>Total Purchases: <b className="text-gray-600 dark:text-gray-300">{formatCurrency(ledgerSummary.totalPurchases)}</b></span>
+                {ledgerSummary.totalReceived > 0 && (
+                  <span>Received from Company: <b className="text-blue-600 dark:text-blue-400">{formatCurrency(ledgerSummary.totalReceived)}</b></span>
+                )}
                 <span>Total Payments: <b className="text-gray-600 dark:text-gray-300">{formatCurrency(ledgerSummary.totalPayments)}</b></span>
               </div>
             </div>
@@ -811,12 +822,13 @@ export default function CompaniesPage() {
               <div className="space-y-1.5 max-h-96 overflow-y-auto">
                 {filteredLedger.map(e => {
                   const isPurchase = e.type === 'Purchase';
+                  const isReceived = !isPurchase && e.direction === 'from_company';
                   const desc = isPurchase
                     ? `${(e.items ?? []).length} item${(e.items ?? []).length === 1 ? '' : 's'}`
                     : (e.method ?? '');
                   const title = isPurchase
                     ? `${e.invoiceNumber || 'Purchase'} · ${desc}`
-                    : `${e.type} · ${desc}`;
+                    : `${isReceived ? 'Received' : 'Payment'} · ${desc}`;
                   const afterLabel = getBalanceLabel(e.balanceAfter);
                   return (
                     <button
@@ -825,10 +837,10 @@ export default function CompaniesPage() {
                       className="w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-700/30 hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors text-left"
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${isPurchase ? 'bg-green-100 dark:bg-green-900/30' : 'bg-red-100 dark:bg-red-900/30'}`}>
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${isPurchase ? 'bg-green-100 dark:bg-green-900/30' : isReceived ? 'bg-blue-100 dark:bg-blue-900/30' : 'bg-red-100 dark:bg-red-900/30'}`}>
                           {isPurchase
                             ? <ShoppingCart size={14} className="text-green-600 dark:text-green-400" />
-                            : <Banknote size={14} className="text-red-500" />}
+                            : <Banknote size={14} className={isReceived ? 'text-blue-600 dark:text-blue-400' : 'text-red-500'} />}
                         </div>
                         <div className="min-w-0">
                           <p className="text-sm font-medium text-gray-900 dark:text-white truncate flex items-center gap-2">
@@ -839,8 +851,8 @@ export default function CompaniesPage() {
                         </div>
                       </div>
                       <div className="text-right flex-shrink-0">
-                        <p className={`text-sm font-bold ${isPurchase ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
-                          {isPurchase ? '+' : '−'} {formatCurrency(e.amount)}
+                        <p className={`text-sm font-bold ${isPurchase ? 'text-green-600 dark:text-green-400' : isReceived ? 'text-blue-600 dark:text-blue-400' : 'text-red-500'}`}>
+                          {isPurchase || isReceived ? '+' : '−'} {formatCurrency(e.amount)}
                         </p>
                         <p className="text-[10px] text-gray-400">
                           Bal: {formatCurrency(Math.abs(e.balanceAfter))} {afterLabel}
@@ -1215,6 +1227,30 @@ export default function CompaniesPage() {
       >
         <div className="space-y-4">
           <div>
+            <label className="label">Payment Type *</label>
+            <div className="grid grid-cols-2 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-600">
+              <button
+                type="button"
+                onClick={() => setPaymentDirection('to_company')}
+                className={`px-3 py-2 text-xs font-medium transition-colors ${paymentDirection === 'to_company' ? 'bg-red-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+              >
+                Paid to Company
+              </button>
+              <button
+                type="button"
+                onClick={() => setPaymentDirection('from_company')}
+                className={`px-3 py-2 text-xs font-medium transition-colors ${paymentDirection === 'from_company' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+              >
+                Received from Company
+              </button>
+            </div>
+            <p className="text-[10px] text-gray-400 mt-1">
+              {paymentDirection === 'to_company'
+                ? 'You paid the company — reduces what you owe.'
+                : 'The company gave you money (advance) — increases what you owe.'}
+            </p>
+          </div>
+          <div>
             <label className="label">Amount (PKR) *</label>
             <input value={paymentAmount} onChange={e => setPaymentAmount(e.target.value)} type="number" min="0" placeholder="0" className="input" />
           </div>
@@ -1246,7 +1282,7 @@ export default function CompaniesPage() {
           onClose={() => setDetailEntryId(null)}
           title={detailEntry.type === 'Purchase'
             ? `Purchase Invoice${detailEntry.invoiceNumber ? ` ${detailEntry.invoiceNumber}` : ''}`
-            : 'Payment Details'}
+            : detailEntry.direction === 'from_company' ? 'Received from Company' : 'Payment Details'}
           subtitle={`${formatDate(detailEntry.date)} · ${ledgerCompany?.name ?? ''}`}
           size={detailEntry.type === 'Purchase' ? 'xl' : 'md'}
           footer={
@@ -1388,7 +1424,13 @@ export default function CompaniesPage() {
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3">
+                  <p className="text-xs text-gray-400 mb-1">Type</p>
+                  <p className={`text-sm font-semibold ${detailEntry.direction === 'from_company' ? 'text-blue-600 dark:text-blue-400' : 'text-gray-900 dark:text-white'}`}>
+                    {detailEntry.direction === 'from_company' ? 'Received from Company' : 'Paid to Company'}
+                  </p>
+                </div>
                 <div className="bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3">
                   <p className="text-xs text-gray-400 mb-1">Method</p>
                   <p className="text-sm font-semibold text-gray-900 dark:text-white">{detailEntry.method}</p>
@@ -1403,7 +1445,9 @@ export default function CompaniesPage() {
               )}
               <div className="flex justify-between items-center border-t border-gray-100 dark:border-gray-700 pt-3">
                 <span className="text-sm font-semibold text-gray-900 dark:text-white">Amount</span>
-                <span className="text-lg font-bold text-red-500">{formatCurrencyFull(detailEntry.amount)}</span>
+                <span className={`text-lg font-bold ${detailEntry.direction === 'from_company' ? 'text-blue-600 dark:text-blue-400' : 'text-red-500'}`}>
+                  {detailEntry.direction === 'from_company' ? '+ ' : ''}{formatCurrencyFull(detailEntry.amount)}
+                </span>
               </div>
               <div className="flex justify-between items-center bg-gray-50 dark:bg-gray-700/30 rounded-xl p-3">
                 <span className="text-sm text-gray-600 dark:text-gray-300">Balance After This Entry</span>

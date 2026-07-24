@@ -69,6 +69,7 @@ export async function POST(req: Request) {
       if (!['Bank Transfer', 'Cheque', 'Cash', 'Other'].includes(body.method)) {
         return NextResponse.json({ error: 'A valid payment method is required' }, { status: 400 });
       }
+      body.direction = body.direction === 'from_company' ? 'from_company' : 'to_company';
       body.items = undefined;
     } else {
       return NextResponse.json({ error: 'type must be Purchase or Payment' }, { status: 400 });
